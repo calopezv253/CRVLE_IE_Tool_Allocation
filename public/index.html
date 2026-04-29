@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tool Allocation Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════ TOP NAV ═══════════════════════════════════ -->
+<header class="topbar">
+  <div class="topbar-left">
+    <svg class="intel-logo" viewBox="0 0 60 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Intel">
+      <text x="0" y="20" font-family="Arial" font-weight="700" font-size="22" fill="#0071C5">intel</text>
+    </svg>
+    <span class="topbar-title">Tool Allocation Dashboard</span>
+  </div>
+  <div class="topbar-right">
+    <span class="topbar-area-badge" id="areaBadge">—</span>
+    <button class="btn btn-icon" id="settingsBtn" title="Column Mapping Settings">⚙</button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════ LAYOUT ════════════════════════════════════ -->
+<div class="layout">
+
+  <!-- ───────────── SIDEBAR ───────────── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-section">
+      <label class="filter-label">Area</label>
+      <select id="filterArea" class="filter-select">
+        <option value="">All Areas</option>
+        <option value="HDBI">HDBI</option>
+        <option value="HDMX">HDMX</option>
+        <option value="PPV">PPV</option>
+      </select>
+    </div>
+
+    <div class="sidebar-section" id="subAreaSection" style="display:none">
+      <label class="filter-label">Sub-Area</label>
+      <select id="filterSub" class="filter-select">
+        <option value="">All</option>
+      </select>
+    </div>
+
+    <div class="sidebar-section" id="coolantSection" style="display:none">
+      <label class="filter-label">Coolant (HDMX)</label>
+      <select id="filterCoolant" class="filter-select">
+        <option value="">All</option>
+        <option value="HFE">HFE</option>
+        <option value="EGDI">EGDI</option>
+      </select>
+    </div>
+
+    <div class="sidebar-section">
+      <label class="filter-label">Work Week (WW)</label>
+      <select id="filterWW" class="filter-select">
+        <option value="">All Weeks</option>
+      </select>
+    </div>
+
+    <div class="sidebar-section">
+      <label class="filter-label">Day</label>
+      <select id="filterDay" class="filter-select">
+        <option value="">All Days</option>
+      </select>
+    </div>
+
+    <div class="sidebar-section">
+      <label class="filter-label">Tool / Machine</label>
+      <div id="toolCheckList" class="tool-checklist"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <label class="filter-label">Search Product</label>
+      <div class="search-row">
+        <input type="text" id="productSearch" class="filter-input" placeholder="e.g. MPE-DMR" />
+        <button class="btn btn-sm" id="productSearchBtn">Go</button>
+      </div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn btn-primary" id="applyBtn">Apply Filters</button>
+      <button class="btn btn-secondary" id="exportBtn">Export CSV</button>
+      <button class="btn btn-ghost" id="clearBtn">Clear</button>
+    </div>
+  </aside>
+
+  <!-- ───────────── MAIN ───────────── -->
+  <main class="main" id="main">
+
+    <div class="area-tabs" id="areaTabs" role="tablist" aria-label="Main Areas">
+      <button class="area-tab is-active" type="button" data-area="" role="tab" aria-selected="true">ALL</button>
+      <button class="area-tab" type="button" data-area="HDBI" role="tab" aria-selected="false">HDBI</button>
+      <button class="area-tab" type="button" data-area="HDMX" role="tab" aria-selected="false">HDMX</button>
+      <button class="area-tab" type="button" data-area="PPV" role="tab" aria-selected="false">PPV</button>
+    </div>
+
+    <!-- Status bar -->
+    <div class="status-bar">
+      <span id="statusMsg">Select filters and click <strong>Apply Filters</strong> to load data.</span>
+      <span id="recordCount" class="record-count"></span>
+    </div>
+
+    <section class="stats-section" id="statsSection" aria-label="Cell usage statistics">
+      <div class="stats-section-header">
+        <h3>Cell and Product Usage</h3>
+        <span class="stats-note">Cells with value Empty are treated as having no product.</span>
+      </div>
+      <div class="stats-grid" id="statsGrid"></div>
+    </section>
+
+    <!-- Machine grid -->
+    <div class="machine-grid" id="machineGrid">
+      <!-- Machine cards rendered by app.js -->
+    </div>
+
+    <!-- Empty state -->
+    <div class="empty-state" id="emptyState" style="display:none">
+      <div class="empty-icon">📭</div>
+      <p>No allocation data found for the selected filters.</p>
+    </div>
+
+  </main>
+</div>
+
+<!-- ═══════════════════════════ LEGEND ════════════════════════════════════ -->
+<footer class="legend-bar">
+  <span class="legend-title">Legend:</span>
+  <span class="legend-item"><span class="legend-dot dot-occupied"></span>Occupied</span>
+  <span class="legend-item"><span class="legend-dot dot-idle"></span>Idle / Empty</span>
+  <span class="legend-item"><span class="legend-dot dot-highlight"></span>Search match</span>
+  <span class="legend-item"><span class="legend-dot dot-tlo"></span>TLO</span>
+  <span class="legend-item">Hover a cell for details &nbsp;·&nbsp; Click a machine for full view</span>
+</footer>
+
+<!-- ═══════════════════════════ TOOLTIP ═══════════════════════════════════ -->
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+
+<div class="loading-overlay" id="loadingOverlay" style="display:none" role="status" aria-live="polite" aria-label="Loading data">
+  <div class="loading-box">
+    <span class="spinner loading-spinner"></span>
+    <p id="loadingMessage">Loading data...</p>
+  </div>
+</div>
+
+<!-- ═════════════════════ COLUMN MAPPING MODAL ════════════════════════════ -->
+<div class="modal-overlay" id="settingsModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal">
+    <h2 id="modalTitle" class="modal-title">⚙ Column Mapping</h2>
+    <p class="modal-subtitle">
+      Map the view columns returned by <code>ops.vw_SUM_PRODUCT_ALLOCATION</code> to dashboard fields.
+      Click <strong>Discover Columns</strong> to auto-populate the dropdowns.
+    </p>
+    <button class="btn btn-secondary" id="discoverBtn">Discover Columns</button>
+    <div id="discoverStatus" class="discover-status"></div>
+
+    <div class="mapping-grid" id="mappingGrid">
+      <!-- Rows injected by app.js -->
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="saveMappingBtn">Save & Close</button>
+      <button class="btn btn-ghost" id="cancelMappingBtn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════ DETAIL MODAL ════════════════════════════════ -->
+<div class="modal-overlay" id="detailModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+  <div class="modal modal-wide">
+    <h2 id="detailTitle" class="modal-title"></h2>
+    <div id="detailBody" class="detail-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closeDetailBtn">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+,,,,,,,,,,,,,,,,
+,,HDBI 4786,,,,HDBI 5082,,,,,,,,,,
+Cell,,Column LA,,Column RA,,Column LA,,Column LB  ,,Column LC  ,,Column RA   ,,Column RB  ,,Column RC  
+601,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,Samples-DMR (x4),,Samples-DMR (x4),,Samples-DMR (X4),,BI-SRF/GNR SP HCC/LCC (X8),,Samples GNR/SRF/CWF AP (x8),,Samples GNR/SRF/CWF AP (x8)
+501,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,Samples-DMR (x4),,Samples-DMR (x4),,BI-DMR (X4),,Empty,,Samples GNR/SRF/CWF AP (x8),,Samples GNR/SRF/CWF AP (x8)
+401,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,Samples-DMR (x4),,BI-DMR (X4),,BI-DMR (X4),,BI-GNR SP XCC (x8),,Samples GNR/SRF/CWF AP (x8),,Samples GNR/SRF/CWF AP (x8)
+301,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,Samples-DMR (x4),,Samples-DMR (x4),,BI-DMR (X4),,BI-GNR D XCC (x8),,Samples GNR/SRF/CWF AP (x8),,Empty
+201,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,Qual-DMR (x4),,Samples-DMR (x4),,BI-GNR/SRF / CWF AP (x4) (only debug),,BI - SPR/EMR XCC (X16),,Samples GNR/SRF/CWF AP (x8),,Empty
+101,,BI - SPR/EMR MCC (X8),,BI-GNR D HCC (x8),,Qual-DMR (x4),,Samples-DMR (x4),,BI-GNR/SRF / CWF AP (x4) (only debug),,BI-GNR/SRF/CWF AP (x8),,Samples GNR/SRF/CWF AP (x8),,BI-SRF/GNR SP LCC / GMM (X8)
+,,,,,,,,,,,,,,,,
+,,BDC 5257,,BDC4944,,,,,,,,,,,,
+Cell,,Prime time /Off shift,,Prime time /Off shift,,,,,,,,,,,,
+201,,BI-GNR D XCC (x4) (only debug),,BI-DMR (X4),,,,,,,,,,,,
+101,,BI-SRF/GNR SP LCC / GMM (X8),,TRB Debug,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,HDBI 4786,,,,HDBI 5082,,,,,,,,,,
+,,Prime time / Off Shift,,,,Prime time / Off shift,,,,,,,,,,
+,,Column LA,,Column RA,,Column LA,,Column LB  ,,Column LC  ,,Column RA   ,,Column RB  ,,Column RC  
+,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,SAMPLES-DMR (x4),,Empty,,BI-DMR (x1),,BI-SRF SP (x8),,Empty,,Samples GNR/SRF/CWF AP (x8)
+,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,SAMPLES-DMR (x4),,Empty,,BI-DMR (x1),,BI-GNR SP XCC (x8),,Samples GNR/SRF/CWF AP (x8),,Samples GNR/SRF/CWF AP (x8)
+,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,SAMPLES-DMR (x4),,Empty,,BI-DMR (x1),,BI-GNR SP XCC (x8),,Samples GNR/SRF/CWF AP (x8),,Samples GNR/SRF/CWF AP (x8)
+,,QUAL GNR/SRF/CWF AP (x8),,QUAL GNR/SRF/CWF AP (x8),,SAMPLES-DMR (x4),,Empty,,Empty,,BI-GNR D XCC (x8),,Samples GNR/SRF/CWF AP (x8),,Samples GNR/SRF/CWF AP (x8)
+,,QUAL GNR/SRF/CWF AP (x8),,SAMPLES GNR/SRF/CWF AP (x8),,SAMPLES-DMR (x4),,Empty,,BI-GNR/SRF / CWF AP (x4) (only debug),,BI - SRF SP (x8),,Samples GNR/SRF/CWF AP (x8),,BI-GNR/SRF/CWF AP (x8)
+,,QUAL GNR/SRF/CWF AP (x8),,BI-GNR D HCC (x8),,SAMPLES-DMR (x4),,BI-DMR (x4),,BI-GNR/SRF / CWF AP (x4) (only debug),,DOWN,,Samples GNR/SRF/CWF AP (x8),,BI-GNR/SRF/CWF AP (x8)
+,,,,,,,,,,,,,,,,
+,,BDC 5257,,BDC4944,,,,,,,,,,,,
+,,Prime time /Off shift,,Prime time /Off shift,,,,,,,,,,,,
+,,TRB Debug,,BI-DMR,,,,,,,,,,,,
+,,BI-GNR D XCC (x2),,BI-GNR D XCC (x4),,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
