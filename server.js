@@ -52,7 +52,7 @@ async function getPool() {
 // Stores { data, ts } per cache key to avoid repeated DB queries for the
 // same WW/day within the TTL window.
 const queryCache  = new Map();
-const CACHE_TTL   = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL   = 13 * 60 * 60 * 1000; // 13 hours (longer than the 12h warm-up refresh interval so the cache never expires between refreshes)
 
 function getCached(key) {
   const entry = queryCache.get(key);
@@ -410,11 +410,59 @@ app.get('*', (req2, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// ─── Cache Warm-up ───────────────────────────────────────────────────────────
+// Runs an /api/allocations-equivalent query for the current WW/day and stores
+// the result in `queryCache`. This way the first user request is instant
+// instead of waiting up to 60s for the SQL view to scan.
+async function warmCache(reason = 'scheduled') {
+  try {
+    const period = getDefaultPeriodFromCalendar();
+    if (!period || !period.ww) {
+      console.warn('[CacheWarm] No default period available, skipping');
+      return;
+    }
+    const ww  = String(period.ww);
+    const day = String(period.day);
+
+    const tCol = safeCol(DEFAULT_COLS.toolCol);
+    const cCol = safeCol(DEFAULT_COLS.cellCol);
+    const pCol = safeCol(DEFAULT_COLS.productCol);
+    const wCol = safeCol(DEFAULT_COLS.wwCol);
+    const dCol = safeCol(DEFAULT_COLS.dayCol);
+    const oCol = safeCol(DEFAULT_COLS.tosCol);
+
+    const selectList = [tCol, cCol, pCol, wCol, dCol, oCol];
+
+    const t0 = Date.now();
+    const p  = await getPool();
+    const r  = p.request();
+    r.timeout = QUERY_TIMEOUT;
+    r.input('ww',  sql.NVarChar, ww);
+    r.input('day', sql.NVarChar, day);
+
+    const result = await r.query(
+      `SELECT ${selectList.join(', ')} FROM ${DB_VIEW} WHERE ${wCol} = @ww AND ${dCol} = @day ORDER BY ${tCol}, ${cCol}`
+    );
+
+    const cacheKey = `alloc|${ww}|${day}`;
+    setCached(cacheKey, result.recordset);
+    console.log(`[CacheWarm] (${reason}) ${result.recordset.length} rows for ${cacheKey} in ${Date.now() - t0}ms`);
+  } catch (err) {
+    console.error('[CacheWarm] Failed:', err.message);
+  }
+}
+
+// Auto-refresh cache every 12 hours so it never expires mid-day
+const WARM_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
+setInterval(() => warmCache('12h-refresh'), WARM_INTERVAL_MS).unref();
+
 // ─── Start ───────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
   console.log(`[Server] Listening on http://localhost:${PORT}`);
   try {
     await getPool();
+    // Pre-warm cache in background — does not block server startup
+    warmCache('startup');
   } catch (err) {
     console.error('[DB] Initial connection failed:', err.message);
   }
