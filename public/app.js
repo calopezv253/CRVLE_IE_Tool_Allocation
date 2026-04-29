@@ -554,16 +554,20 @@ async function loadFilters() {
   let defaultWw = '';
   let defaultDay = '';
 
-  try {
-    const period = await apiFetch('/api/default-period');
-    defaultWw = String(period.ww || '');
-    defaultDay = String(period.day || '');
-  } catch {
-    // Keep empty defaults and continue with /api/filters response if available.
+  // Fire both requests in parallel — eliminates sequential wait
+  const [periodResult, filtersResult] = await Promise.allSettled([
+    apiFetch('/api/default-period'),
+    apiFetch(`/api/filters?${p}`),
+  ]);
+
+  if (periodResult.status === 'fulfilled') {
+    defaultWw  = String(periodResult.value.ww  || '');
+    defaultDay = String(periodResult.value.day || '');
   }
 
   try {
-    const { weeks, days } = await apiFetch(`/api/filters?${p}`);
+    if (filtersResult.status !== 'fulfilled') throw new Error(filtersResult.reason?.message || 'filters failed');
+    const { weeks, days } = filtersResult.value;
     populateWWSelect(filterWW, weeks, 'All Weeks');
     populateSelect(filterDay, days,  'All Days');
 

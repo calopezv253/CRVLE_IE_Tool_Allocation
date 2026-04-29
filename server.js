@@ -6,6 +6,7 @@ const cors    = require('cors');
 const path    = require('path');
 const fs      = require('fs');
 const sql     = require('mssql');
+const zlib    = require('zlib');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -47,7 +48,40 @@ async function getPool() {
   return pool;
 }
 
+// ─── In-memory query cache ────────────────────────────────────────────────────
+// Stores { data, ts } per cache key to avoid repeated DB queries for the
+// same WW/day within the TTL window.
+const queryCache  = new Map();
+const CACHE_TTL   = 5 * 60 * 1000; // 5 minutes
+
+function getCached(key) {
+  const entry = queryCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) { queryCache.delete(key); return null; }
+  return entry.data;
+}
+function setCached(key, data) {
+  queryCache.set(key, { data, ts: Date.now() });
+}
+
 // ─── Middleware ──────────────────────────────────────────────────────────────
+// Gzip middleware using built-in zlib (no external dependency)
+app.use((req, res, next) => {
+  const ae = req.headers['accept-encoding'] || '';
+  if (!ae.includes('gzip')) return next();
+  const _json = res.json.bind(res);
+  res.json = (body) => {
+    const buf = Buffer.from(JSON.stringify(body));
+    zlib.gzip(buf, (err, compressed) => {
+      if (err) return _json(body);
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Length', compressed.length);
+      res.end(compressed);
+    });
+  };
+  next();
+});
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -255,9 +289,25 @@ app.get('/api/allocations', async (req2, res) => {
     }
 
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    // Serve from cache when no tool filter is active (tool filter data is
+    // a subset of the full WW/day result, so we skip caching those slices).
+    const cacheKey = `alloc|${ww || ''}|${day || ''}`;
+    const useCache = !tools; // only cache unfiltered (full) loads
+    if (useCache) {
+      const cached = getCached(cacheKey);
+      if (cached) {
+        console.log(`[/api/allocations] cache hit for ${cacheKey}`);
+        return res.json({ data: cached });
+      }
+    }
+
     const result = await r.query(
       `SELECT ${selectList.join(', ')} FROM ${DB_VIEW} ${whereClause} ORDER BY ${tCol}, ${cCol}`
     );
+
+    if (useCache) setCached(cacheKey, result.recordset);
+    console.log(`[/api/allocations] ${result.recordset.length} rows for ${cacheKey}`);
     res.json({ data: result.recordset });
   } catch (err) {
     console.error('[/api/allocations]', err.message);
