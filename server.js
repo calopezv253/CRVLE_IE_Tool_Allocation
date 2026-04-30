@@ -181,28 +181,26 @@ app.get('/api/schema', async (req2, res) => {
 });
 
 // GET /api/filters?wwCol=ww&dayCol=day_
-// Uses TOP 1 ORDER BY ww DESC to get latest WW (fast even without index).
-// Days 1-7 are returned without a DB query.
-app.get('/api/filters', async (req2, res) => {
+// Derives weeks entirely from Intel Calendar.csv (no DB query).
+// The DB query for the latest WW was removed because the view has no index
+// on (ww), causing a 60-second full-table scan on every page load.
+app.get('/api/filters', (req2, res) => {
   try {
-    const wCol = colFromQuery(req2.query, 'wwCol');
-    const p    = await getPool();
+    const period = getDefaultPeriodFromCalendar();
+    const currentWW = Number(String(period.ww).slice(-2));
+    const year      = String(period.ww).slice(0, 4);
 
-    const r = p.request();
-    r.timeout = QUERY_TIMEOUT;
-    const latestRes = await r.query(
-      `SELECT TOP 1 ${wCol} AS ww FROM ${DB_VIEW}
-       WHERE ${wCol} IS NOT NULL ORDER BY ${wCol} DESC`);
-
-    let weeks = [];
-    // Intel calendar mapping: Su=0, Mo=1, Tu=2, We=3, Th=4, Fr=5, Sa=6
-    const days = ['0','1','2','3','4','5','6'];
-
-    if (latestRes.recordset.length) {
-      const latestWW = Number(latestRes.recordset[0].ww);
-      for (let i = 7; i >= 0; i--) { const w = latestWW - i; if (w > 0) weeks.push(String(w)); }
+    // Build last 8 weeks from the calendar-resolved current WW
+    const weeks = [];
+    for (let i = 7; i >= 0; i--) {
+      const w = currentWW - i;
+      if (w > 0) weeks.push(`${year}${String(w).padStart(2, '0')}`);
     }
 
+    // Intel calendar: Su=0, Mo=1, Tu=2, We=3, Th=4, Fr=5, Sa=6
+    const days = ['0', '1', '2', '3', '4', '5', '6'];
+
+    console.log(`[/api/filters] served from calendar (no DB) — ${weeks.length} weeks, current=${period.ww}`);
     res.json({ weeks, days });
   } catch (err) {
     console.error('[/api/filters]', err.message);
@@ -401,6 +399,78 @@ app.get('/api/export', async (req2, res) => {
     res.send(csvRows.join('\r\n'));
   } catch (err) {
     console.error('[/api/export]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/changes
+// Compares tool-cell allocations across the last 3 recorded (ww, day_) periods
+// and returns a list of differences (added, removed, or changed products).
+app.get('/api/changes', async (req2, res) => {
+  try {
+    const tCol = colFromQuery(req2.query, 'toolCol');
+    const cCol = colFromQuery(req2.query, 'cellCol');
+    const pCol = colFromQuery(req2.query, 'productCol');
+    const wCol = colFromQuery(req2.query, 'wwCol');
+    const dCol = colFromQuery(req2.query, 'dayCol');
+
+    const p = await getPool();
+
+    // Step 1: get the 3 most-recent distinct (ww, day_) combinations
+    const r1 = p.request();
+    r1.timeout = QUERY_TIMEOUT;
+    const periodsRes = await r1.query(
+      `SELECT DISTINCT TOP 3 ${wCol} AS ww, ${dCol} AS day_
+       FROM ${DB_VIEW}
+       WHERE ${wCol} IS NOT NULL AND ${dCol} IS NOT NULL
+       ORDER BY ${wCol} DESC, ${dCol} DESC`
+    );
+    const periods = periodsRes.recordset;
+    if (periods.length < 2) {
+      return res.json({ changes: [], periods: [] });
+    }
+
+    // Step 2: fetch allocations for each period into a key→product map
+    const periodData = [];
+    for (const period of periods) {
+      const r2 = p.request();
+      r2.timeout = QUERY_TIMEOUT;
+      r2.input('ww',  sql.NVarChar, String(period.ww));
+      r2.input('day', sql.NVarChar, String(period.day_));
+      const result = await r2.query(
+        `SELECT ${tCol} AS machine, ${cCol} AS cell, ${pCol} AS product
+         FROM ${DB_VIEW}
+         WHERE ${wCol} = @ww AND ${dCol} = @day`
+      );
+      const map = {};
+      for (const row of result.recordset) {
+        const key = `${row.machine}||${row.cell}`;
+        map[key] = row.product == null ? null : String(row.product).trim();
+      }
+      periodData.push({ ww: String(period.ww), day: String(period.day_), map });
+    }
+
+    // Step 3: diff consecutive periods (newest first)
+    const changes = [];
+    for (let i = 0; i < periodData.length - 1; i++) {
+      const newer = periodData[i];
+      const older = periodData[i + 1];
+      const allKeys = new Set([...Object.keys(newer.map), ...Object.keys(older.map)]);
+      for (const key of allKeys) {
+        const [machine, cell] = key.split('||');
+        const oldProduct = Object.prototype.hasOwnProperty.call(older.map, key) ? older.map[key] : null;
+        const newProduct = Object.prototype.hasOwnProperty.call(newer.map, key) ? newer.map[key] : null;
+        if (oldProduct !== newProduct) {
+          changes.push({ machine, cell, oldProduct, newProduct,
+            fromWW: older.ww, fromDay: older.day,
+            toWW  : newer.ww, toDay  : newer.day });
+        }
+      }
+    }
+
+    res.json({ changes, periods: periodData.map(pd => ({ ww: pd.ww, day: pd.day })) });
+  } catch (err) {
+    console.error('[/api/changes]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
