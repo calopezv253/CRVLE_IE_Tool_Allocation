@@ -1,6 +1,10 @@
 'use strict';
 require('dotenv').config();
 
+// Keep process alive and surface hidden crashes
+process.on('uncaughtException',  err => console.error('[UNCAUGHT]', err));
+process.on('unhandledRejection', err => console.error('[UNHANDLED]', err));
+
 const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
@@ -27,8 +31,8 @@ const dbConfig = {
   connectionTimeout: 30000,
   pool: {
     max    : 10,
-    min    : 0,
-    idleTimeoutMillis: 30000,
+    min    : 1,              // keep at least 1 connection alive so Node.js process doesn't exit
+    idleTimeoutMillis: 60 * 60 * 1000, // 1 hour — connections persist between requests
   },
 };
 
