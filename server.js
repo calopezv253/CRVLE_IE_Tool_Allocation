@@ -31,8 +31,8 @@ const dbConfig = {
   connectionTimeout: 30000,
   pool: {
     max    : 10,
-    min    : 1,              // keep at least 1 connection alive so Node.js process doesn't exit
-    idleTimeoutMillis: 60 * 60 * 1000, // 1 hour — connections persist between requests
+    min    : 0,
+    idleTimeoutMillis: 60 * 60 * 1000, // 1 hour
   },
 };
 
@@ -407,9 +407,68 @@ app.get('/api/export', async (req2, res) => {
   }
 });
 
+// ─── Changes result cache ─────────────────────────────────────────────────────
+// Keyed by column mapping so different mappings don't share results.
+const changesResultCache = new Map();
+const CHANGES_CACHE_TTL  = 30 * 60 * 1000; // 30 minutes
+
+// Compute up to `n` most-recent business-day periods going back from today.
+// Uses Intel Calendar.csv so no DB round-trip is needed to find WW numbers.
+function recentBusinessPeriods(n) {
+  const calendarPath = path.join(__dirname, 'Intel Calendar.csv');
+  const csv = fs.readFileSync(calendarPath, 'utf8');
+  const periods = [];
+  const cursor = new Date();
+  // Safety cap: scan at most 30 calendar days back to find n business days
+  for (let i = 0; i < 30 && periods.length < n; i++) {
+    const dow = cursor.getDay();
+    if (dow !== 0 && dow !== 6) { // skip Sun(0) / Sat(6)
+      const ww = parseCalendarWeekForDate(cursor, csv);
+      if (ww) {
+        const year = cursor.getFullYear();
+        periods.push({
+          ww : `${year}${String(ww).padStart(2, '0')}`,
+          day: String(dow),
+        });
+      }
+    }
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return periods; // newest first
+}
+
+// Fetch allocation data for one (ww, day) period.
+// Re-uses queryCache so warm-up data is never fetched twice.
+async function fetchPeriodMap(p, tCol, cCol, pCol, wCol, dCol, ww, day) {
+  const cacheKey = `alloc|${ww}|${day}`;
+  let rows = getCached(cacheKey);
+  if (!rows) {
+    const r = p.request();
+    r.timeout = QUERY_TIMEOUT;
+    r.input('ww',  sql.NVarChar, String(ww));
+    r.input('day', sql.NVarChar, String(day));
+    const result = await r.query(
+      `SELECT ${tCol} AS MACHINE_NAME, ${cCol} AS CELL, ${pCol} AS PRODUCT
+       FROM ${DB_VIEW} WHERE ${wCol} = @ww AND ${dCol} = @day`
+    );
+    rows = result.recordset;
+    setCached(cacheKey, rows);
+    console.log(`[/api/changes] fetched ${rows.length} rows for ${cacheKey}`);
+  } else {
+    console.log(`[/api/changes] cache hit for ${cacheKey}`);
+  }
+
+  const map = {};
+  for (const row of rows) {
+    const key = `${row.MACHINE_NAME}||${row.CELL}`;
+    map[key] = row.PRODUCT == null ? null : String(row.PRODUCT).trim();
+  }
+  return map;
+}
+
 // GET /api/changes
-// Compares tool-cell allocations across the last 3 recorded (ww, day_) periods
-// and returns a list of differences (added, removed, or changed products).
+// Returns allocation differences across the last 3 business days.
+// Uses queryCache and changesResultCache for near-instant repeat calls.
 app.get('/api/changes', async (req2, res) => {
   try {
     const tCol = colFromQuery(req2.query, 'toolCol');
@@ -418,43 +477,30 @@ app.get('/api/changes', async (req2, res) => {
     const wCol = colFromQuery(req2.query, 'wwCol');
     const dCol = colFromQuery(req2.query, 'dayCol');
 
-    const p = await getPool();
+    // Return cached changes if still fresh
+    const changeCacheKey = `${tCol}|${cCol}|${pCol}|${wCol}|${dCol}`;
+    const cached = changesResultCache.get(changeCacheKey);
+    if (cached && Date.now() - cached.ts < CHANGES_CACHE_TTL) {
+      console.log('[/api/changes] changes cache hit');
+      return res.json(cached.data);
+    }
 
-    // Step 1: get the 3 most-recent distinct (ww, day_) combinations
-    const r1 = p.request();
-    r1.timeout = QUERY_TIMEOUT;
-    const periodsRes = await r1.query(
-      `SELECT DISTINCT TOP 3 ${wCol} AS ww, ${dCol} AS day_
-       FROM ${DB_VIEW}
-       WHERE ${wCol} IS NOT NULL AND ${dCol} IS NOT NULL
-       ORDER BY ${wCol} DESC, ${dCol} DESC`
-    );
-    const periods = periodsRes.recordset;
+    // Compute the 3 most-recent business-day periods from the Intel Calendar
+    const periods = recentBusinessPeriods(3);
     if (periods.length < 2) {
       return res.json({ changes: [], periods: [] });
     }
 
-    // Step 2: fetch allocations for each period into a key→product map
+    const p = await getPool();
+
+    // Fetch each period's data, re-using queryCache where possible
     const periodData = [];
     for (const period of periods) {
-      const r2 = p.request();
-      r2.timeout = QUERY_TIMEOUT;
-      r2.input('ww',  sql.NVarChar, String(period.ww));
-      r2.input('day', sql.NVarChar, String(period.day_));
-      const result = await r2.query(
-        `SELECT ${tCol} AS machine, ${cCol} AS cell, ${pCol} AS product
-         FROM ${DB_VIEW}
-         WHERE ${wCol} = @ww AND ${dCol} = @day`
-      );
-      const map = {};
-      for (const row of result.recordset) {
-        const key = `${row.machine}||${row.cell}`;
-        map[key] = row.product == null ? null : String(row.product).trim();
-      }
-      periodData.push({ ww: String(period.ww), day: String(period.day_), map });
+      const map = await fetchPeriodMap(p, tCol, cCol, pCol, wCol, dCol, period.ww, period.day);
+      periodData.push({ ww: period.ww, day: period.day, map });
     }
 
-    // Step 3: diff consecutive periods (newest first)
+    // Diff consecutive periods (newest first)
     const changes = [];
     for (let i = 0; i < periodData.length - 1; i++) {
       const newer = periodData[i];
@@ -462,17 +508,22 @@ app.get('/api/changes', async (req2, res) => {
       const allKeys = new Set([...Object.keys(newer.map), ...Object.keys(older.map)]);
       for (const key of allKeys) {
         const [machine, cell] = key.split('||');
-        const oldProduct = Object.prototype.hasOwnProperty.call(older.map, key) ? older.map[key] : null;
-        const newProduct = Object.prototype.hasOwnProperty.call(newer.map, key) ? newer.map[key] : null;
-        if (oldProduct !== newProduct) {
-          changes.push({ machine, cell, oldProduct, newProduct,
+        const oldProd = Object.prototype.hasOwnProperty.call(older.map, key) ? older.map[key] : null;
+        const newProd = Object.prototype.hasOwnProperty.call(newer.map, key) ? newer.map[key] : null;
+        if (oldProd !== newProd) {
+          changes.push({
+            machine, cell,
+            oldProduct: oldProd, newProduct: newProd,
             fromWW: older.ww, fromDay: older.day,
-            toWW  : newer.ww, toDay  : newer.day });
+            toWW  : newer.ww, toDay  : newer.day,
+          });
         }
       }
     }
 
-    res.json({ changes, periods: periodData.map(pd => ({ ww: pd.ww, day: pd.day })) });
+    const result = { changes, periods: periodData.map(pd => ({ ww: pd.ww, day: pd.day })) };
+    changesResultCache.set(changeCacheKey, { data: result, ts: Date.now() });
+    res.json(result);
   } catch (err) {
     console.error('[/api/changes]', err.message);
     res.status(500).json({ error: err.message });
@@ -510,7 +561,7 @@ async function warmCache(reason = 'scheduled') {
     const t0 = Date.now();
     const p  = await getPool();
     const r  = p.request();
-    r.timeout = QUERY_TIMEOUT;
+    r.timeout = 120000; // 2 min — DB is slow without index; give it more time than QUERY_TIMEOUT
     r.input('ww',  sql.NVarChar, ww);
     r.input('day', sql.NVarChar, day);
 
@@ -523,12 +574,23 @@ async function warmCache(reason = 'scheduled') {
     console.log(`[CacheWarm] (${reason}) ${result.recordset.length} rows for ${cacheKey} in ${Date.now() - t0}ms`);
   } catch (err) {
     console.error('[CacheWarm] Failed:', err.message);
+    // Retry once after 2 minutes if this was startup warm-up
+    if (reason === 'startup') {
+      console.log('[CacheWarm] Will retry in 2 minutes...');
+      setTimeout(() => warmCache('startup-retry'), 2 * 60 * 1000);
+    }
   }
 }
 
-// Auto-refresh cache every 12 hours so it never expires mid-day
+// Auto-refresh cache every 12 hours.
+// NOTE: do NOT call .unref() — the interval must keep the Node.js process
+// alive so the server doesn't exit after the warm-up completes.
 const WARM_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
-setInterval(() => warmCache('12h-refresh'), WARM_INTERVAL_MS).unref();
+setInterval(() => warmCache('12h-refresh'), WARM_INTERVAL_MS);
+
+// Extra keep-alive: a lightweight heartbeat that prevents Node from exiting
+// when there are no active DB connections in the pool.
+setInterval(() => {}, 60 * 1000); // ping every 60s — no-op, just holds the event loop
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {
