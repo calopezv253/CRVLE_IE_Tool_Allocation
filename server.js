@@ -47,6 +47,12 @@ let pool = null;
 async function getPool() {
   if (!pool) {
     pool = await sql.connect(dbConfig);
+    // CRITICAL: mssql pool emits 'error' events when connections drop.
+    // Without a listener, Node.js treats it as an unhandled error and exits.
+    pool.on('error', err => {
+      console.error('[Pool] Connection error (pool will auto-reconnect):', err.message);
+      pool = null; // force reconnect on next request
+    });
     console.log(`[DB] Connected to ${dbConfig.server}:${dbConfig.port} / ${dbConfig.database}`);
   }
   return pool;
@@ -536,45 +542,48 @@ app.get('*', (req2, res) => {
 });
 
 // ─── Cache Warm-up ───────────────────────────────────────────────────────────
-// Runs an /api/allocations-equivalent query for the current WW/day and stores
-// the result in `queryCache`. This way the first user request is instant
-// instead of waiting up to 60s for the SQL view to scan.
+// Fetches allocation data for one (ww, day) period and stores in queryCache.
+async function warmOnePeriod(p, ww, day, reason) {
+  const cacheKey = `alloc|${ww}|${day}`;
+  if (getCached(cacheKey)) {
+    console.log(`[CacheWarm] (${reason}) already cached for ${cacheKey}`);
+    return;
+  }
+  const tCol = safeCol(DEFAULT_COLS.toolCol);
+  const cCol = safeCol(DEFAULT_COLS.cellCol);
+  const pCol = safeCol(DEFAULT_COLS.productCol);
+  const wCol = safeCol(DEFAULT_COLS.wwCol);
+  const dCol = safeCol(DEFAULT_COLS.dayCol);
+  const oCol = safeCol(DEFAULT_COLS.tosCol);
+  const selectList = [tCol, cCol, pCol, wCol, dCol, oCol];
+
+  const t0 = Date.now();
+  const r  = p.request();
+  r.timeout = 120000;
+  r.input('ww',  sql.NVarChar, String(ww));
+  r.input('day', sql.NVarChar, String(day));
+  const result = await r.query(
+    `SELECT ${selectList.join(', ')} FROM ${DB_VIEW} WHERE ${wCol} = @ww AND ${dCol} = @day ORDER BY ${tCol}, ${cCol}`
+  );
+  setCached(cacheKey, result.recordset);
+  console.log(`[CacheWarm] (${reason}) ${result.recordset.length} rows for ${cacheKey} in ${Date.now() - t0}ms`);
+}
+
+// Warm the current period + up to 2 previous business days so /api/changes
+// can diff without any cold queries.
 async function warmCache(reason = 'scheduled') {
   try {
-    const period = getDefaultPeriodFromCalendar();
-    if (!period || !period.ww) {
-      console.warn('[CacheWarm] No default period available, skipping');
+    const periods = recentBusinessPeriods(3);
+    if (!periods.length) {
+      console.warn('[CacheWarm] No periods resolved from calendar, skipping');
       return;
     }
-    const ww  = String(period.ww);
-    const day = String(period.day);
-
-    const tCol = safeCol(DEFAULT_COLS.toolCol);
-    const cCol = safeCol(DEFAULT_COLS.cellCol);
-    const pCol = safeCol(DEFAULT_COLS.productCol);
-    const wCol = safeCol(DEFAULT_COLS.wwCol);
-    const dCol = safeCol(DEFAULT_COLS.dayCol);
-    const oCol = safeCol(DEFAULT_COLS.tosCol);
-
-    const selectList = [tCol, cCol, pCol, wCol, dCol, oCol];
-
-    const t0 = Date.now();
-    const p  = await getPool();
-    const r  = p.request();
-    r.timeout = 120000; // 2 min — DB is slow without index; give it more time than QUERY_TIMEOUT
-    r.input('ww',  sql.NVarChar, ww);
-    r.input('day', sql.NVarChar, day);
-
-    const result = await r.query(
-      `SELECT ${selectList.join(', ')} FROM ${DB_VIEW} WHERE ${wCol} = @ww AND ${dCol} = @day ORDER BY ${tCol}, ${cCol}`
-    );
-
-    const cacheKey = `alloc|${ww}|${day}`;
-    setCached(cacheKey, result.recordset);
-    console.log(`[CacheWarm] (${reason}) ${result.recordset.length} rows for ${cacheKey} in ${Date.now() - t0}ms`);
+    const p = await getPool();
+    for (const period of periods) {
+      await warmOnePeriod(p, period.ww, period.day, reason);
+    }
   } catch (err) {
     console.error('[CacheWarm] Failed:', err.message);
-    // Retry once after 2 minutes if this was startup warm-up
     if (reason === 'startup') {
       console.log('[CacheWarm] Will retry in 2 minutes...');
       setTimeout(() => warmCache('startup-retry'), 2 * 60 * 1000);
