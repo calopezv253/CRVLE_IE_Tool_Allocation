@@ -314,8 +314,6 @@ h4 { font-size: 16px; }
   font-weight: 700;
   text-align: left;
   border-bottom: none;
-  font-size: 12px;
-  letter-spacing: .3px;
   position: sticky;
   top: 0;
   z-index: 1;
@@ -376,7 +374,6 @@ h4 { font-size: 16px; }
 
 .stats-product-table .stats-tools-cell {
   text-align: left !important;
-  font-size: 11px;
   color: #000000;
   word-break: break-word;
 }
@@ -931,4 +928,169 @@ h4 { font-size: 16px; }
   overflow-y: auto;
   display: flex; flex-direction: column; gap: 16px;
   padding-right: 2px;
+}
+
+/* ─── Planned Conversions modal ──────────────────── */
+.btn-planned { font-size: 18px; }
+
+.modal-planned {
+  max-width: 900px;
+  width: 100%;
+}
+
+/* Form grid: 3 columns on wide screens, 2 on medium, 1 on small */
+.planned-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px 16px;
+}
+@media (max-width: 780px) {
+  .planned-form-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 520px) {
+  .planned-form-grid { grid-template-columns: 1fr; }
+}
+
+.planned-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* Full-width row (notes field) */
+.planned-field-full {
+  grid-column: 1 / -1;
+}
+
+.planned-field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--clr-text-muted);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+.planned-field label .req { color: #c0392b; }
+
+.planned-field select,
+.planned-field input[type="text"],
+.planned-field input[type="date"] {
+  padding: 7px 10px;
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  color: var(--clr-text);
+  transition: border-color var(--transition);
+}
+.planned-field select:focus,
+.planned-field input:focus {
+  outline: none;
+  border-color: var(--clr-primary);
+  box-shadow: 0 0 0 3px rgba(0,113,197,.15);
+}
+
+.planned-form-error {
+  padding: 8px 12px;
+  background: #fdecea;
+  border-left: 4px solid #c0392b;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: #7b2320;
+  font-weight: 600;
+}
+
+.planned-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+/* Section header above the table */
+.planned-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+.planned-table-header h3 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--clr-text);
+}
+
+.planned-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-sm);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.planned-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 680px;
+}
+
+.planned-table thead tr {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.planned-table th {
+  background: var(--clr-primary);
+  color: #fff;
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  white-space: nowrap;
+}
+
+.planned-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--clr-border);
+  vertical-align: middle;
+  color: var(--clr-text);
+}
+
+.planned-table tr:last-child td { border-bottom: none; }
+.planned-table tbody tr:hover td { background: #f0f6ff; }
+
+/* Highlight rows whose date is already past */
+.planned-row-past td { color: var(--clr-text-muted); }
+.planned-row-past .planned-date { text-decoration: line-through; }
+
+.planned-product { font-weight: 700; }
+.planned-date    { white-space: nowrap; }
+.planned-created { white-space: nowrap; font-size: 11px; color: var(--clr-text-muted); }
+
+.planned-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--clr-text-muted);
+  font-style: italic;
+}
+.planned-error { color: #c0392b !important; font-style: normal; font-weight: 600; }
+
+/* Delete row button */
+.btn-delete-planned {
+  background: transparent;
+  color: #c0392b;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 3px 7px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.btn-delete-planned:hover {
+  background: #fdecea;
+  border-color: #c0392b;
 }

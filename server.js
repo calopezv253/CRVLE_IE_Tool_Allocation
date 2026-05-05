@@ -536,6 +536,80 @@ app.get('/api/changes', async (req2, res) => {
   }
 });
 
+// ─── Planned Conversions ──────────────────────────────────────────────────────
+// Stored in planned-conversions.json in the project root (server-side, shared).
+const PLANNED_FILE = path.join(__dirname, 'planned-conversions.json');
+
+function readPlanned() {
+  try {
+    if (!fs.existsSync(PLANNED_FILE)) return [];
+    return JSON.parse(fs.readFileSync(PLANNED_FILE, 'utf8'));
+  } catch { return []; }
+}
+function writePlanned(data) {
+  fs.writeFileSync(PLANNED_FILE, JSON.stringify(data, null, 2), 'utf8');
+}
+
+// Validate that an ID is a safe numeric-only string (timestamp-based)
+const VALID_ID = /^\d{1,20}$/;
+
+// GET /api/planned-conversions
+app.get('/api/planned-conversions', (req2, res) => {
+  try {
+    res.json(readPlanned());
+  } catch (err) {
+    console.error('[/api/planned-conversions GET]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/planned-conversions
+app.post('/api/planned-conversions', (req2, res) => {
+  try {
+    const { area, tool, cell, newProduct, date, notes } = req2.body;
+    if (!area || !tool || !cell || !newProduct || !date) {
+      return res.status(400).json({ error: 'area, tool, cell, newProduct y date son obligatorios.' });
+    }
+    // Sanitise inputs — no SQL here (flat-file storage), but trim/truncate for safety.
+    const entry = {
+      id        : Date.now().toString(),
+      area      : String(area).trim().slice(0, 64),
+      tool      : String(tool).trim().slice(0, 128),
+      cell      : String(cell).trim().slice(0, 32),
+      newProduct: String(newProduct).trim().slice(0, 256),
+      date      : String(date).trim().slice(0, 10),
+      notes     : String(notes || '').trim().slice(0, 512),
+      createdAt : new Date().toISOString(),
+    };
+    const list = readPlanned();
+    list.push(entry);
+    writePlanned(list);
+    console.log(`[/api/planned-conversions] added id=${entry.id} tool=${entry.tool} cell=${entry.cell}`);
+    res.status(201).json(entry);
+  } catch (err) {
+    console.error('[/api/planned-conversions POST]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/planned-conversions/:id
+app.delete('/api/planned-conversions/:id', (req2, res) => {
+  try {
+    const { id } = req2.params;
+    if (!VALID_ID.test(id)) return res.status(400).json({ error: 'Invalid ID.' });
+    const list = readPlanned();
+    const idx = list.findIndex(e => e.id === id);
+    if (idx === -1) return res.status(404).json({ error: 'Entry not found.' });
+    list.splice(idx, 1);
+    writePlanned(list);
+    console.log(`[/api/planned-conversions] deleted id=${id}`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[/api/planned-conversions DELETE]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Fallback: serve SPA ─────────────────────────────────────────────────────
 app.get('*', (req2, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

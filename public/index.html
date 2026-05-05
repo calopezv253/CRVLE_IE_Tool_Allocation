@@ -19,6 +19,7 @@
   <div class="topbar-right">
     <span class="topbar-area-badge" id="areaBadge">—</span>
     <button class="btn btn-icon btn-changes" id="changesBtn" title="Recent Allocation Changes (last 2 days)">&#9719;</button>
+    <button class="btn btn-icon btn-planned" id="plannedBtn" title="Planned Product Conversions">&#128197;</button>
     <button class="btn btn-icon" id="settingsBtn" title="Column Mapping Settings">⚙</button>
   </div>
 </header>
@@ -193,6 +194,86 @@
     <div id="detailBody" class="detail-body"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="closeDetailBtn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ PLANNED CONVERSIONS MODAL ════════════════════ -->
+<div class="modal-overlay" id="plannedModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="plannedTitle">
+  <div class="modal modal-planned">
+    <h2 id="plannedTitle" class="modal-title">&#128197; Conversiones de Producto Planeadas</h2>
+    <p class="modal-subtitle">Registra cambios de producto en celdas programados para próximos días.</p>
+
+    <!-- ── Add form ── -->
+    <form id="plannedForm" class="planned-form" novalidate>
+      <div class="planned-form-grid">
+        <div class="planned-field">
+          <label for="pArea">Área <span class="req">*</span></label>
+          <select id="pArea" required>
+            <option value="">Seleccionar…</option>
+            <option value="HDBI">HDBI</option>
+            <option value="HDMX">HDMX</option>
+            <option value="PPV">PPV</option>
+          </select>
+        </div>
+        <div class="planned-field" id="pSubField" style="display:none">
+          <label for="pSub">Sub-área</label>
+          <select id="pSub">
+            <option value="">Seleccionar…</option>
+          </select>
+        </div>
+        <div class="planned-field">
+          <label for="pTool">Tool / Máquina <span class="req">*</span></label>
+          <select id="pTool" required>
+            <option value="">Seleccionar área primero</option>
+          </select>
+        </div>
+        <div class="planned-field">
+          <label for="pCell">Celda <span class="req">*</span></label>
+          <select id="pCell" required>
+            <option value="">Seleccionar tool primero</option>
+          </select>
+        </div>
+        <div class="planned-field">
+          <label for="pProduct">Nuevo Producto <span class="req">*</span></label>
+          <input type="text" id="pProduct" placeholder="Ej. MPE-DMR" required maxlength="256" />
+        </div>
+        <div class="planned-field">
+          <label for="pDate">Fecha de cambio <span class="req">*</span></label>
+          <input type="date" id="pDate" required />
+        </div>
+        <div class="planned-field planned-field-full">
+          <label for="pNotes">Notas (opcional)</label>
+          <input type="text" id="pNotes" placeholder="Comentarios adicionales…" maxlength="512" />
+        </div>
+      </div>
+      <div id="plannedFormError" class="planned-form-error" style="display:none"></div>
+      <div class="planned-form-actions">
+        <button type="submit" class="btn btn-primary">Agregar Conversión</button>
+      </div>
+    </form>
+
+    <!-- ── Table ── -->
+    <div class="planned-table-header">
+      <h3>Conversiones registradas</h3>
+      <button class="btn btn-sm btn-secondary" id="plannedExportBtn">Exportar CSV</button>
+    </div>
+    <div class="planned-table-wrap">
+      <table class="planned-table" id="plannedTable">
+        <thead>
+          <tr>
+            <th>Área</th><th>Tool</th><th>Celda</th>
+            <th>Nuevo Producto</th><th>Fecha</th><th>Notas</th><th>Registrado</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="plannedTableBody">
+          <tr><td colspan="8" class="planned-empty">Cargando…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="closePlannedBtn">Cerrar</button>
     </div>
   </div>
 </div>

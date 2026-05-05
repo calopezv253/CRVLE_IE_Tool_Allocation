@@ -1211,15 +1211,19 @@ function buildHdmxCoolantStats(data) {
 function renderHdmxCoolantStatsCard(container, coolantStats) {
   if (!container) return;
 
+  const CELLS_PER_HDMX_TOOL = 10;
+
   const rows = ['HFE', 'EGDI']
     .map((coolant) => {
       const s = coolantStats[coolant] || { tools: 0, totalCells: 0, usedCells: 0, emptyCells: 0 };
-      const utilization = s.totalCells > 0 ? ((s.usedCells / s.totalCells) * 100) : 0;
+      const totalCells = s.tools * CELLS_PER_HDMX_TOOL;
+      const utilization = totalCells > 0 ? ((s.usedCells / totalCells) * 100) : 0;
       return `<tr>
         <td>${coolant}</td>
         <td>${s.tools}</td>
-        <td>${s.usedCells} cells</td>
-        <td>${s.emptyCells} cells</td>
+        <td>${totalCells}</td>
+        <td>${s.usedCells}</td>
+        <td>${s.emptyCells}</td>
         <td>${utilization.toFixed(1)}%</td>
       </tr>`;
     })
@@ -1231,7 +1235,7 @@ function renderHdmxCoolantStatsCard(container, coolantStats) {
     <div class="stats-products-title">By Coolant (HFE / EGDI)</div>
     <table class="stats-product-table">
       <thead>
-        <tr><th>Coolant</th><th>Tools</th><th>Used Cells</th><th>Empty Cells</th><th>Utilization</th></tr>
+        <tr><th>Coolant</th><th>Tools</th><th>Total Cells</th><th>Used Cells</th><th>Empty Cells</th><th>Utilization</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -2498,3 +2502,268 @@ changesExportBtn.addEventListener('click', () => {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 });
+
+// ─── Planned Conversions ──────────────────────────────────────────────────────
+const plannedBtn       = document.getElementById('plannedBtn');
+const plannedModal     = document.getElementById('plannedModal');
+const closePlannedBtn  = document.getElementById('closePlannedBtn');
+const plannedForm      = document.getElementById('plannedForm');
+const pArea            = document.getElementById('pArea');
+const pSubField        = document.getElementById('pSubField');
+const pSub             = document.getElementById('pSub');
+const pTool            = document.getElementById('pTool');
+const pCell            = document.getElementById('pCell');
+const pProduct         = document.getElementById('pProduct');
+const pDate            = document.getElementById('pDate');
+const pNotes           = document.getElementById('pNotes');
+const plannedFormError = document.getElementById('plannedFormError');
+const plannedTableBody = document.getElementById('plannedTableBody');
+const plannedExportBtn = document.getElementById('plannedExportBtn');
+
+// All cells by tool – derived from the same logic used by the dashboard cards.
+function getCellsForPlannedTool(area, toolId) {
+  const cells = fixedCellsForTool(area, toolId);
+  return cells && cells.length ? cells : null;
+}
+
+// Populate sub-area dropdown when area changes inside the planned form.
+pArea.addEventListener('change', () => {
+  const area = pArea.value;
+
+  // Sub-area
+  pSub.innerHTML = '<option value="">Seleccionar…</option>';
+  const areaData = AREA_MAP[area];
+  if (area && areaData && areaData.subs && areaData.subs.length) {
+    pSubField.style.display = '';
+    for (const s of areaData.subs) {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = s;
+      pSub.appendChild(opt);
+    }
+  } else {
+    pSubField.style.display = 'none';
+  }
+
+  populatePlannedTools(area, '');
+  populatePlannedCells(area, '');
+});
+
+pSub.addEventListener('change', () => {
+  populatePlannedTools(pArea.value, pSub.value);
+  populatePlannedCells(pArea.value, '');
+});
+
+pTool.addEventListener('change', () => {
+  populatePlannedCells(pArea.value, pTool.value);
+});
+
+function populatePlannedTools(area, sub) {
+  pTool.innerHTML = '';
+  if (!area) {
+    pTool.innerHTML = '<option value="">Seleccionar área primero</option>';
+    return;
+  }
+  const areaData = AREA_MAP[area];
+  if (!areaData) { pTool.innerHTML = '<option value="">Sin herramientas</option>'; return; }
+
+  let tools = [];
+  if (sub && areaData.tools[sub]) {
+    tools = areaData.tools[sub];
+  } else {
+    tools = Object.values(areaData.tools).flat();
+    // de-duplicate
+    tools = [...new Set(tools)];
+  }
+
+  if (!tools.length) {
+    pTool.innerHTML = '<option value="">Sin herramientas definidas</option>';
+    return;
+  }
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Seleccionar tool…';
+  pTool.appendChild(placeholder);
+
+  for (const toolId of tools.sort((a, b) => a.localeCompare(b))) {
+    const opt = document.createElement('option');
+    opt.value = toolId;
+    opt.textContent = toolId;
+    pTool.appendChild(opt);
+  }
+}
+
+function populatePlannedCells(area, toolId) {
+  pCell.innerHTML = '';
+  if (!toolId) {
+    pCell.innerHTML = '<option value="">Seleccionar tool primero</option>';
+    return;
+  }
+  const cells = getCellsForPlannedTool(area, toolId);
+  if (!cells) {
+    // No fixed layout – allow free-text entry
+    pCell.innerHTML = '<option value="">Escribir celda manualmente</option>';
+    // Replace select with input temporarily
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'pCell';
+    input.placeholder = 'Ej. LA101';
+    input.maxLength = 32;
+    input.required = true;
+    pCell.parentNode.replaceChild(input, pCell);
+    return;
+  }
+  // Restore select if it was replaced by input
+  if (pCell.tagName === 'INPUT') {
+    const sel = document.createElement('select');
+    sel.id = 'pCell';
+    sel.required = true;
+    pCell.parentNode.replaceChild(sel, pCell);
+  }
+  const freshCell = document.getElementById('pCell');
+  freshCell.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Seleccionar celda…';
+  freshCell.appendChild(placeholder);
+  for (const c of cells) {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    freshCell.appendChild(opt);
+  }
+}
+
+function showPlannedFormError(msg) {
+  plannedFormError.textContent = msg;
+  plannedFormError.style.display = msg ? '' : 'none';
+}
+
+async function loadPlannedConversions() {
+  plannedTableBody.innerHTML = '<tr><td colspan="8" class="planned-empty">Cargando…</td></tr>';
+  try {
+    const list = await apiFetch('/api/planned-conversions');
+    renderPlannedTable(list);
+  } catch (err) {
+    plannedTableBody.innerHTML = `<tr><td colspan="8" class="planned-empty planned-error">Error: ${err.message}</td></tr>`;
+  }
+}
+
+function renderPlannedTable(list) {
+  if (!list.length) {
+    plannedTableBody.innerHTML = '<tr><td colspan="8" class="planned-empty">No hay conversiones planeadas aún.</td></tr>';
+    return;
+  }
+
+  // Sort by date ascending so soonest changes appear first
+  const sorted = [...list].sort((a, b) => a.date.localeCompare(b.date));
+
+  let html = '';
+  for (const entry of sorted) {
+    const created = entry.createdAt
+      ? new Date(entry.createdAt).toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' })
+      : '—';
+    const isPast = entry.date && entry.date < new Date().toISOString().slice(0, 10);
+    html += `<tr class="${isPast ? 'planned-row-past' : ''}">
+      <td>${escHtml(entry.area || '—')}</td>
+      <td>${escHtml(entry.tool || '—')}</td>
+      <td>${escHtml(entry.cell || '—')}</td>
+      <td class="planned-product">${escHtml(entry.newProduct || '—')}</td>
+      <td class="planned-date">${escHtml(entry.date || '—')}</td>
+      <td>${escHtml(entry.notes || '')}</td>
+      <td class="planned-created">${created}</td>
+      <td><button class="btn btn-sm btn-delete-planned" data-id="${escHtml(entry.id)}" title="Eliminar">&#10005;</button></td>
+    </tr>`;
+  }
+  plannedTableBody.innerHTML = html;
+
+  // Bind delete buttons
+  plannedTableBody.querySelectorAll('.btn-delete-planned').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('¿Eliminar esta conversión planeada?')) return;
+      try {
+        const res = await fetch(`/api/planned-conversions/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          alert(`Error: ${err.error || res.statusText}`);
+          return;
+        }
+        await loadPlannedConversions();
+      } catch (err) {
+        alert(`Error: ${err.message}`);
+      }
+    });
+  });
+}
+
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+plannedForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showPlannedFormError('');
+
+  const cellEl = document.getElementById('pCell');
+  const area       = pArea.value.trim();
+  const tool       = pTool.value.trim();
+  const cell       = cellEl ? cellEl.value.trim() : '';
+  const newProduct = pProduct.value.trim();
+  const date       = pDate.value.trim();
+  const notes      = pNotes.value.trim();
+
+  if (!area || !tool || !cell || !newProduct || !date) {
+    showPlannedFormError('Completa todos los campos obligatorios (*).');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/planned-conversions', {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify({ area, tool, cell, newProduct, date, notes }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      showPlannedFormError(err.error || res.statusText);
+      return;
+    }
+    // Reset form (keep area/sub selection for quick successive adds)
+    pProduct.value = '';
+    pDate.value    = '';
+    pNotes.value   = '';
+    await loadPlannedConversions();
+  } catch (err) {
+    showPlannedFormError(`Error de red: ${err.message}`);
+  }
+});
+
+// Export planned conversions as CSV
+plannedExportBtn.addEventListener('click', async () => {
+  try {
+    const list = await apiFetch('/api/planned-conversions');
+    if (!list.length) { alert('No hay conversiones planeadas para exportar.'); return; }
+    const headers = ['Área', 'Tool', 'Celda', 'Nuevo Producto', 'Fecha', 'Notas', 'Registrado'];
+    const rows = list.map(e => [
+      e.area, e.tool, e.cell, e.newProduct, e.date, e.notes || '',
+      e.createdAt ? new Date(e.createdAt).toLocaleString('es-MX') : '',
+    ].map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(','));
+    const csv  = [headers.map(h => `"${h}"`).join(','), ...rows].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = 'planned_conversions.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) { alert(`Error: ${err.message}`); }
+});
+
+// Open/close modal
+plannedBtn.addEventListener('click', () => {
+  plannedModal.style.display = 'flex';
+  // Set today as default date
+  if (!pDate.value) pDate.value = new Date().toISOString().slice(0, 10);
+  loadPlannedConversions();
+});
+closePlannedBtn.addEventListener('click', () => { plannedModal.style.display = 'none'; });
+plannedModal.addEventListener('click', (e) => { if (e.target === plannedModal) plannedModal.style.display = 'none'; });
