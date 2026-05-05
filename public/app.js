@@ -415,6 +415,12 @@ const loadingOverlay  = document.getElementById('loadingOverlay');
 const loadingMessage  = document.getElementById('loadingMessage');
 const statsSection    = document.getElementById('statsSection');
 const statsGrid       = document.getElementById('statsGrid');
+const changesBtn      = document.getElementById('changesBtn');
+const changesModal    = document.getElementById('changesModal');
+const changesBody     = document.getElementById('changesBody');
+const closeChangesBtn = document.getElementById('closeChangesBtn');
+const changesSearch   = document.getElementById('changesSearch');
+const changesExportBtn= document.getElementById('changesExportBtn');
 
 // ─── State ───────────────────────────────────────────────────────────────────
 let colMapping    = loadMapping();
@@ -427,9 +433,16 @@ let highlightSet  = new Set();  // tool+cell keys to highlight
 // ─── API helpers ─────────────────────────────────────────────────────────────
 async function apiFetch(path) {
   const res = await fetch(path);
+  const contentType = res.headers.get('content-type') || '';
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    if (contentType.includes('application/json')) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || res.statusText);
+    }
+    throw new Error(`Server returned ${res.status} ${res.statusText}`);
+  }
+  if (!contentType.includes('application/json')) {
+    throw new Error(`Unexpected server response (expected JSON, got ${contentType || 'unknown'}). Try reloading the page.`);
   }
   return res.json();
 }
@@ -542,6 +555,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // On every page load/refresh, fetch a fresh snapshot from SQL once.
   // All subsequent filtering uses the in-memory cache for this session.
   await ensureBaseDataLoaded(true);
+  // Build tool selector for ALL view on startup.
+  populateToolList(filterArea.value, filterSub.value);
   // Auto-load all machines on startup with no filters applied
   await fetchAndRender();
   hideLoading();
@@ -957,7 +972,17 @@ function isEmptyProductForStats(product) {
 }
 
 function createEmptyStats() {
+  // products: Map<productName, { total: number, byTool: Map<toolDisplayName, count> }>
   return { totalCells: 0, usedCells: 0, emptyCells: 0, products: new Map() };
+}
+
+function ensureProductStat(productsMap, productName) {
+  let entry = productsMap.get(productName);
+  if (!entry) {
+    entry = { total: 0, byTool: new Map() };
+    productsMap.set(productName, entry);
+  }
+  return entry;
 }
 
 function statsBucketKey(area, sub) {
@@ -1017,7 +1042,10 @@ function buildStatsByBucket(data) {
         areaStats.emptyCells += 1;
       } else {
         areaStats.usedCells += 1;
-        areaStats.products.set(product, (areaStats.products.get(product) || 0) + 1);
+        const entry = ensureProductStat(areaStats.products, product);
+        entry.total += 1;
+        const toolLabel = formatMachineDisplayName(toolId) || String(toolId);
+        entry.byTool.set(toolLabel, (entry.byTool.get(toolLabel) || 0) + 1);
       }
     }
   }
@@ -1065,16 +1093,25 @@ function renderAreaStatsCard(container, areaName, subArea, areaStats) {
     ? ((areaStats.usedCells / areaStats.totalCells) * 100)
     : 0;
   const productRows = [...areaStats.products.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]))
     .slice(0, 20)
-    .map(([product, count]) => {
+    .map(([product, info]) => {
       const cls = productClass(product);
-      return `<tr class="${cls}"><td><span class="stats-product-swatch ${cls}"></span>${product}</td><td>${count}</td></tr>`;
+      const toolsText = [...info.byTool.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([tool, count]) => `${tool} (${count})`)
+        .join(' - ');
+      return `<tr>
+        <td class="stats-color-cell ${cls}"></td>
+        <td>${product}</td>
+        <td>${info.total}</td>
+        <td class="stats-tools-cell">${toolsText}</td>
+      </tr>`;
     })
     .join('');
 
   const productContent = productRows
-    ? `<table class="stats-product-table"><thead><tr><th>Product</th><th>Cells</th></tr></thead><tbody>${productRows}</tbody></table>`
+    ? `<table class="stats-product-table"><thead><tr><th>Color</th><th>Product</th><th>Total Cells</th><th class="th-tools">Tools (Cells)</th></tr></thead><tbody>${productRows}</tbody></table>`
     : '<div class="stats-empty">No used cells for the current filters.</div>';
 
   container.className = `stats-card ${cls}`;
@@ -1098,8 +1135,12 @@ function renderAreaStatsCard(container, areaName, subArea, areaStats) {
         <span class="stats-kpi-value">${utilization.toFixed(1)}%</span>
       </div>
     </div>
-    <div class="stats-products-title">Cells by Product</div>
-    ${productContent}
+    <div class="stats-product-section">
+      <div class="stats-products-title">Cells by Product</div>
+      <div class="stats-product-table-wrapper">
+        ${productContent}
+      </div>
+    </div>
   `;
 }
 
@@ -1241,11 +1282,18 @@ function renderUsageStats(data) {
   const targets = getStatsTargets(activeArea);
 
   statsGrid.innerHTML = '';
+  let lastCard = null;
   for (const target of targets) {
     const card = document.createElement('article');
     statsGrid.appendChild(card);
     const stats = statsByBucket.get(statsBucketKey(target.area, target.sub)) || createEmptyStats();
     renderAreaStatsCard(card, target.area, target.sub, stats);
+    lastCard = card;
+  }
+
+  if (activeArea === 'HDBI' && lastCard) {
+    // Append recent changes into the bottom of the HDBI-BDC card (last card)
+    renderHdbiInlineChanges(lastCard, true);
   }
 
   if (activeArea === 'HDMX') {
@@ -1253,9 +1301,267 @@ function renderUsageStats(data) {
     statsGrid.appendChild(coolantCard);
     const coolantStats = buildHdmxCoolantStats(data || []);
     renderHdmxCoolantStatsCard(coolantCard, coolantStats);
+
+    // Append recent changes into the bottom of the coolant card
+    renderHdmxInlineChanges(coolantCard, true);
   }
 
   if (statsSection) statsSection.style.display = '';
+}
+
+// ─── HDMX inline recent-changes card ─────────────────────────────────────────
+async function renderHdmxInlineChanges(container, appendMode = false) {
+  let root;
+  if (appendMode) {
+    root = document.createElement('div');
+    root.className = 'hdmx-inline-changes-section';
+    container.appendChild(root);
+  } else {
+    container.className = 'stats-card stats-card-hdmx-changes';
+    root = container;
+  }
+
+  root.innerHTML = `
+    <h4>&#9719; Recent Allocation Changes &mdash; HDMX</h4>
+    <p class="hdmx-changes-subtitle">Changes detected across the last 3 recorded work periods (up to 2 days).</p>
+    <div class="hdmx-changes-toolbar">
+      <input type="text" class="filter-input changes-search-input hdmx-changes-search" placeholder="Filter by machine, cell or product…" />
+    </div>
+    <div class="hdmx-changes-body"><p class="changes-loading"><span class="spinner"></span> Loading…</p></div>
+  `;
+
+  const searchInput = root.querySelector('.hdmx-changes-search');
+  const bodyDiv     = root.querySelector('.hdmx-changes-body');
+
+  async function loadAndRender(filterText = '') {
+    // Reuse global cache if already loaded, otherwise fetch
+    if (!_changesData.length) {
+      try {
+        const params = mappingParams();
+        const result = await apiFetch(`/api/changes?${params}`);
+        _changesData = result.changes || [];
+      } catch (err) {
+        bodyDiv.innerHTML = `<p class="changes-error">Error loading changes: ${err.message}</p>`;
+        return;
+      }
+    }
+
+    // Keep only HDMX machines
+    const hdmxChanges = _changesData.filter(ch => resolveArea(ch.machine || '').area === 'HDMX');
+    const q = filterText.trim().toLowerCase();
+
+    // Group by comparison period (same logic as modal)
+    const groups = new Map();
+    for (const ch of hdmxChanges) {
+      const gKey = `${ch.fromWW}|${ch.fromDay}→${ch.toWW}|${ch.toDay}`;
+      if (!groups.has(gKey)) {
+        groups.set(gKey, { from: { ww: ch.fromWW, day: ch.fromDay }, to: { ww: ch.toWW, day: ch.toDay }, items: [] });
+      }
+      groups.get(gKey).items.push(ch);
+    }
+
+    let html = '';
+    for (const [, group] of groups) {
+      const items = q
+        ? group.items.filter(c =>
+            (c.machine    || '').toLowerCase().includes(q) ||
+            (c.cell       || '').toLowerCase().includes(q) ||
+            (c.oldProduct || '').toLowerCase().includes(q) ||
+            (c.newProduct || '').toLowerCase().includes(q)
+          )
+        : group.items;
+      if (!items.length) continue;
+
+      const fromLabel = formatChangePeriod(group.from.ww, group.from.day);
+      const toLabel   = formatChangePeriod(group.to.ww,   group.to.day);
+      html += `<div class="changes-group">
+        <div class="changes-group-header">
+          <span class="changes-period-from">${fromLabel}</span>
+          <span class="changes-arrow">&#8594;</span>
+          <span class="changes-period-to">${toLabel}</span>
+          <span class="changes-count">${items.length} change${items.length !== 1 ? 's' : ''}</span>
+        </div>
+        ${renderChangesTable(items)}
+      </div>`;
+    }
+
+    if (!html) {
+      bodyDiv.innerHTML = hdmxChanges.length
+        ? '<p class="changes-empty">No changes match the current filter.</p>'
+        : '<p class="changes-empty">No allocation changes detected in HDMX in the last 2 days.</p>';
+    } else {
+      bodyDiv.innerHTML = html;
+    }
+  }
+
+  searchInput.addEventListener('input', () => loadAndRender(searchInput.value));
+  await loadAndRender('');
+}
+
+// ─── HDBI inline recent-changes card ─────────────────────────────────────────
+async function renderHdbiInlineChanges(container, appendMode = false) {
+  let root;
+  if (appendMode) {
+    root = document.createElement('div');
+    root.className = 'hdbi-inline-changes-section';
+    container.appendChild(root);
+  } else {
+    root = container;
+  }
+
+  root.innerHTML = `
+    <h4>&#9719; Recent Allocation Changes &mdash; HDBI</h4>
+    <p class="hdmx-changes-subtitle">Changes detected across the last 3 recorded work periods (up to 2 days).</p>
+    <div class="hdmx-changes-toolbar">
+      <input type="text" class="filter-input changes-search-input hdmx-changes-search" placeholder="Filter by machine, cell or product…" />
+    </div>
+    <div class="hdmx-changes-body"><p class="changes-loading"><span class="spinner"></span> Loading…</p></div>
+  `;
+
+  const searchInput = root.querySelector('.hdmx-changes-search');
+  const bodyDiv     = root.querySelector('.hdmx-changes-body');
+
+  async function loadAndRender(filterText = '') {
+    if (!_changesData.length) {
+      try {
+        const params = mappingParams();
+        const result = await apiFetch(`/api/changes?${params}`);
+        _changesData = result.changes || [];
+      } catch (err) {
+        bodyDiv.innerHTML = `<p class="changes-error">Error loading changes: ${err.message}</p>`;
+        return;
+      }
+    }
+
+    // Keep only HDBI machines (both HDBI and BDC sub-areas)
+    const hdbiChanges = _changesData.filter(ch => resolveArea(ch.machine || '').area === 'HDBI');
+    const q = filterText.trim().toLowerCase();
+
+    const groups = new Map();
+    for (const ch of hdbiChanges) {
+      const gKey = `${ch.fromWW}|${ch.fromDay}→${ch.toWW}|${ch.toDay}`;
+      if (!groups.has(gKey)) {
+        groups.set(gKey, { from: { ww: ch.fromWW, day: ch.fromDay }, to: { ww: ch.toWW, day: ch.toDay }, items: [] });
+      }
+      groups.get(gKey).items.push(ch);
+    }
+
+    let html = '';
+    for (const [, group] of groups) {
+      const items = q
+        ? group.items.filter(c =>
+            (c.machine    || '').toLowerCase().includes(q) ||
+            (c.cell       || '').toLowerCase().includes(q) ||
+            (c.oldProduct || '').toLowerCase().includes(q) ||
+            (c.newProduct || '').toLowerCase().includes(q)
+          )
+        : group.items;
+      if (!items.length) continue;
+
+      const fromLabel = formatChangePeriod(group.from.ww, group.from.day);
+      const toLabel   = formatChangePeriod(group.to.ww,   group.to.day);
+      html += `<div class="changes-group">
+        <div class="changes-group-header">
+          <span class="changes-period-from">${fromLabel}</span>
+          <span class="changes-arrow">&#8594;</span>
+          <span class="changes-period-to">${toLabel}</span>
+          <span class="changes-count">${items.length} change${items.length !== 1 ? 's' : ''}</span>
+        </div>
+        ${renderChangesTable(items)}
+      </div>`;
+    }
+
+    if (!html) {
+      bodyDiv.innerHTML = hdbiChanges.length
+        ? '<p class="changes-empty">No changes match the current filter.</p>'
+        : '<p class="changes-empty">No allocation changes detected in HDBI in the last 2 days.</p>';
+    } else {
+      bodyDiv.innerHTML = html;
+    }
+  }
+
+  searchInput.addEventListener('input', () => loadAndRender(searchInput.value));
+  await loadAndRender('');
+}
+
+// ─── PPV inline recent-changes panel ────────────────────────────────────────
+async function renderPpvInlineChanges(container, sub) {
+  container.innerHTML = `
+    <h4>&#9719; Recent Allocation Changes &mdash; PPV ${sub || ''}</h4>
+    <p class="hdmx-changes-subtitle">Changes detected across the last 3 recorded work periods (up to 2 days).</p>
+    <div class="hdmx-changes-toolbar">
+      <input type="text" class="filter-input changes-search-input ppv-changes-search" placeholder="Filter by machine, cell or product…" />
+    </div>
+    <div class="hdmx-changes-body"><p class="changes-loading"><span class="spinner"></span> Loading…</p></div>
+  `;
+
+  const searchInput = container.querySelector('.ppv-changes-search');
+  const bodyDiv     = container.querySelector('.hdmx-changes-body');
+
+  async function loadAndRender(filterText = '') {
+    if (!_changesData.length) {
+      try {
+        const params = mappingParams();
+        const result = await apiFetch(`/api/changes?${params}`);
+        _changesData = result.changes || [];
+      } catch (err) {
+        bodyDiv.innerHTML = `<p class="changes-error">Error loading changes: ${err.message}</p>`;
+        return;
+      }
+    }
+
+    // Filter by PPV area and specific sub-area (HST / SST / PTC)
+    const ppvChanges = _changesData.filter(ch => {
+      const loc = resolveArea(ch.machine || '');
+      return loc.area === 'PPV' && (!sub || loc.sub === sub);
+    });
+    const q = filterText.trim().toLowerCase();
+
+    const groups = new Map();
+    for (const ch of ppvChanges) {
+      const gKey = `${ch.fromWW}|${ch.fromDay}→${ch.toWW}|${ch.toDay}`;
+      if (!groups.has(gKey)) {
+        groups.set(gKey, { from: { ww: ch.fromWW, day: ch.fromDay }, to: { ww: ch.toWW, day: ch.toDay }, items: [] });
+      }
+      groups.get(gKey).items.push(ch);
+    }
+
+    let html = '';
+    for (const [, group] of groups) {
+      const items = q
+        ? group.items.filter(c =>
+            (c.machine    || '').toLowerCase().includes(q) ||
+            (c.cell       || '').toLowerCase().includes(q) ||
+            (c.oldProduct || '').toLowerCase().includes(q) ||
+            (c.newProduct || '').toLowerCase().includes(q)
+          )
+        : group.items;
+      if (!items.length) continue;
+
+      const fromLabel = formatChangePeriod(group.from.ww, group.from.day);
+      const toLabel   = formatChangePeriod(group.to.ww,   group.to.day);
+      html += `<div class="changes-group">
+        <div class="changes-group-header">
+          <span class="changes-period-from">${fromLabel}</span>
+          <span class="changes-arrow">&#8594;</span>
+          <span class="changes-period-to">${toLabel}</span>
+          <span class="changes-count">${items.length} change${items.length !== 1 ? 's' : ''}</span>
+        </div>
+        ${renderChangesTable(items)}
+      </div>`;
+    }
+
+    if (!html) {
+      bodyDiv.innerHTML = ppvChanges.length
+        ? '<p class="changes-empty">No changes match the current filter.</p>'
+        : `<p class="changes-empty">No allocation changes detected in PPV ${sub || ''} in the last 2 days.</p>`;
+    } else {
+      bodyDiv.innerHTML = html;
+    }
+  }
+
+  searchInput.addEventListener('input', () => loadAndRender(searchInput.value));
+  await loadAndRender('');
 }
 
 // ─── Render machine grid ──────────────────────────────────────────────────────
@@ -1311,11 +1617,20 @@ function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = t
   let totalCards = 0;
   for (const section of sections) {
     if (activeArea === 'PPV' && section.area === 'PPV' && section.sub) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'ppv-stats-wrapper section-inline-stats';
+
       const statsCard = document.createElement('article');
       const stats = ppvStatsByBucket.get(statsBucketKey('PPV', section.sub)) || createEmptyStats();
       renderAreaStatsCard(statsCard, 'PPV', section.sub, stats);
-      statsCard.classList.add('section-inline-stats');
-      machineGrid.appendChild(statsCard);
+      wrapper.appendChild(statsCard);
+
+      const changesPanel = document.createElement('div');
+      changesPanel.className = 'ppv-inline-changes-panel';
+      wrapper.appendChild(changesPanel);
+      renderPpvInlineChanges(changesPanel, section.sub);
+
+      machineGrid.appendChild(wrapper);
     }
 
     // Safe ID for CSS (replace spaces)
@@ -1937,7 +2252,7 @@ clearBtn.addEventListener('click', async () => {
   if (filterCoolant) filterCoolant.value = '';
   productSearch.value = '';
   areaBadge.textContent = '—';
-  toolCheckList.innerHTML = '<span class="no-tools">Select an area first</span>';
+  populateToolList('', '');
   highlightSet.clear();
   currentData = [];
   // Re-render using cached base data for the active ww/day.
@@ -2047,3 +2362,139 @@ saveMappingBtn.addEventListener('click', async () => {
 function setStatus(html) {
   statusMsg.innerHTML = html;
 }
+
+// ─── Recent Changes modal ─────────────────────────────────────────────────────
+const DAY_NAMES_CHANGES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+let _changesData = [];   // last loaded changes array (for export/filter)
+
+function formatChangePeriod(ww, day) {
+  const dayName = DAY_NAMES_CHANGES[Number(day)] || `Day ${day}`;
+  return `${formatWWLabel(ww)} · ${dayName}`;
+}
+
+function renderChangesTable(items) {
+  if (!items.length) return '<p class="changes-empty">No changes found for the current filter.</p>';
+  let html = `<table class="changes-table">
+    <thead><tr>
+      <th>Machine</th><th>Cell</th><th>Previous Product</th><th>New Product</th><th>Type</th>
+    </tr></thead><tbody>`;
+  for (const ch of items) {
+    const type = !ch.oldProduct ? 'Added' : !ch.newProduct ? 'Removed' : 'Changed';
+    const cls  = type === 'Added' ? 'change-added' : type === 'Removed' ? 'change-removed' : 'change-modified';
+    html += `<tr>
+      <td>${ch.machine || '—'}</td>
+      <td>${ch.cell || '—'}</td>
+      <td class="change-old">${ch.oldProduct || '<em class="change-empty">Empty</em>'}</td>
+      <td class="change-new">${ch.newProduct || '<em class="change-empty">Empty</em>'}</td>
+      <td><span class="change-badge ${cls}">${type}</span></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+function renderChangesBody(filterText = '') {
+  if (!_changesData.length) {
+    changesBody.innerHTML = '<p class="changes-empty">No allocation changes detected in the last 2 days.</p>';
+    return;
+  }
+
+  const q = filterText.trim().toLowerCase();
+
+  // Group by comparison period
+  const groups = new Map();
+  for (const ch of _changesData) {
+    const gKey = `${ch.fromWW}|${ch.fromDay}→${ch.toWW}|${ch.toDay}`;
+    if (!groups.has(gKey)) groups.set(gKey, { from: { ww: ch.fromWW, day: ch.fromDay }, to: { ww: ch.toWW, day: ch.toDay }, items: [] });
+    groups.get(gKey).items.push(ch);
+  }
+
+  let html = '';
+  for (const [, group] of groups) {
+    const items = q
+      ? group.items.filter(c =>
+          (c.machine    || '').toLowerCase().includes(q) ||
+          (c.cell       || '').toLowerCase().includes(q) ||
+          (c.oldProduct || '').toLowerCase().includes(q) ||
+          (c.newProduct || '').toLowerCase().includes(q)
+        )
+      : group.items;
+    if (!items.length) continue;
+
+    const fromLabel = formatChangePeriod(group.from.ww, group.from.day);
+    const toLabel   = formatChangePeriod(group.to.ww,   group.to.day);
+    html += `<div class="changes-group">
+      <div class="changes-group-header">
+        <span class="changes-period-from">${fromLabel}</span>
+        <span class="changes-arrow">&#8594;</span>
+        <span class="changes-period-to">${toLabel}</span>
+        <span class="changes-count">${items.length} change${items.length !== 1 ? 's' : ''}</span>
+      </div>
+      ${renderChangesTable(items)}
+    </div>`;
+  }
+
+  changesBody.innerHTML = html || '<p class="changes-empty">No changes match the current filter.</p>';
+}
+
+async function openChanges() {
+  if (!isMappingComplete(colMapping)) { openSettings(); return; }
+  changesModal.style.display = 'flex';
+  changesSearch.value = '';
+  changesBody.innerHTML = '<p class="changes-loading">Loading changes\u2026</p>';
+  _changesData = [];
+
+  try {
+    const params = mappingParams();
+    const data   = await apiFetch(`/api/changes?${params}`);
+    _changesData = data.changes || [];
+    renderChangesBody('');
+  } catch (err) {
+    changesBody.innerHTML = `<p class="changes-error">Error loading changes: ${err.message}</p>`;
+  }
+}
+
+changesBtn.addEventListener('click', openChanges);
+closeChangesBtn.addEventListener('click', () => { changesModal.style.display = 'none'; });
+changesModal.addEventListener('click', (e) => { if (e.target === changesModal) changesModal.style.display = 'none'; });
+
+changesSearch.addEventListener('input', () => { renderChangesBody(changesSearch.value); });
+
+changesExportBtn.addEventListener('click', () => {
+  if (!_changesData.length) return;
+  const q = changesSearch.value.trim().toLowerCase();
+  const rows = q
+    ? _changesData.filter(c =>
+        (c.machine    || '').toLowerCase().includes(q) ||
+        (c.cell       || '').toLowerCase().includes(q) ||
+        (c.oldProduct || '').toLowerCase().includes(q) ||
+        (c.newProduct || '').toLowerCase().includes(q)
+      )
+    : _changesData;
+  const headers = ['Machine', 'Cell', 'Old Product', 'New Product', 'Type', 'From WW', 'From Day', 'To WW', 'To Day'];
+  const csvLines = [headers.join(',')];
+  for (const ch of rows) {
+    const type = !ch.oldProduct ? 'Added' : !ch.newProduct ? 'Removed' : 'Changed';
+    const dayNames = DAY_NAMES_CHANGES;
+    csvLines.push([
+      ch.machine    || '',
+      ch.cell       || '',
+      ch.oldProduct || '',
+      ch.newProduct || '',
+      type,
+      ch.fromWW  || '',
+      dayNames[Number(ch.fromDay)] || ch.fromDay || '',
+      ch.toWW    || '',
+      dayNames[Number(ch.toDay)]   || ch.toDay   || '',
+    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+  }
+  const blob = new Blob([csvLines.join('\r\n')], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = 'allocation_changes.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
