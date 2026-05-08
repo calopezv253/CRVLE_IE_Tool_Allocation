@@ -84,6 +84,7 @@ const HDMX_GMM_PRODUCTS = new Set([
   'GMMLCC10T0287',
   'GMMLCC10T1336',
   'GMMLCC10T1567',
+  'GNRXEL10T0095',
 ]);
 
 const HDBI_GMM_PRODUCTS = new Set([
@@ -164,19 +165,23 @@ function isMachineHiddenInAll(machineName) {
   return ALL_VIEW_HIDDEN_MACHINES.has(raw) || ALL_VIEW_HIDDEN_MACHINES.has(shown);
 }
 
+function stripMpePrefix(p) {
+  return String(p || '').replace(/^MPE_/i, '');
+}
+
 function normalizeHdmxProductForStats(value) {
   const raw = String(value == null ? '' : value).trim();
   if (!raw) return 'Empty';
 
   const upper = raw.toUpperCase();
   if (['MPE_GNR-SP-LCC', 'MPE_GNR-SP-XCC', 'MPE_GNR-SP-HCC'].includes(upper)) {
-    return 'MPE_GNR-SP';
+    return 'GNR-SP';
   }
   if (HDMX_GMM_PRODUCTS.has(upper)) {
-    return 'MPE_GMM';
+    return 'GMM';
   }
 
-  return raw;
+  return stripMpePrefix(raw);
 }
 
 function isHdbiGmmTool(toolId) {
@@ -192,16 +197,16 @@ function normalizeProductForCard(toolId, value) {
   const upper = raw.toUpperCase();
 
   if (loc.area === 'HDBI') {
-    if (isHdbiGmmTool(toolId) && upper.startsWith('GMM')) return 'MPE_GMM';
-    if (HDBI_GMM_PRODUCTS.has(upper)) return 'MPE_GMM';
+    if (isHdbiGmmTool(toolId) && upper.startsWith('GMM')) return 'GMM';
+    if (HDBI_GMM_PRODUCTS.has(upper)) return 'GMM';
   }
 
   if (loc.area === 'HDMX') {
-    if (HDMX_GMM_PRODUCTS.has(upper)) return 'MPE_GMM';
-    if (upper === 'MPE_NVL-S-28C') return 'MPE_NVL';
+    if (HDMX_GMM_PRODUCTS.has(upper)) return 'GMM';
+    if (upper === 'MPE_NVL-S-28C') return 'NVL';
   }
 
-  return raw;
+  return stripMpePrefix(raw);
 }
 
 function formatToolTokenForFilter(toolId, areaHint = '') {
@@ -385,6 +390,8 @@ const subAreaSection  = document.getElementById('subAreaSection');
 const filterSub       = document.getElementById('filterSub');
 const coolantSection  = document.getElementById('coolantSection');
 const filterCoolant   = document.getElementById('filterCoolant');
+const hdmxLayoutSection = document.getElementById('hdmxLayoutSection');
+const ppvLayoutSection  = document.getElementById('ppvLayoutSection');
 const filterWW        = document.getElementById('filterWW');
 const filterDay       = document.getElementById('filterDay');
 const toolCheckList   = document.getElementById('toolCheckList');
@@ -678,6 +685,14 @@ filterArea.addEventListener('change', () => {
     }
   }
 
+  if (hdmxLayoutSection) {
+    hdmxLayoutSection.style.display = area === 'HDMX' ? '' : 'none';
+  }
+
+  if (ppvLayoutSection) {
+    ppvLayoutSection.style.display = area === 'PPV' ? '' : 'none';
+  }
+
   populateToolList(area, '');
 });
 
@@ -800,6 +815,16 @@ function populateToolList(area, sub) {
     return;
   }
 
+  const emptyLbl = document.createElement('label');
+  const emptyCb  = document.createElement('input');
+  emptyCb.type = 'checkbox';
+  emptyCb.id = 'toolToggleEmpty';
+  emptyCb.checked = true;
+  emptyLbl.className = 'tool-toggle-empty';
+  emptyLbl.appendChild(emptyCb);
+  emptyLbl.append(' Tools Empty');
+  toolCheckList.appendChild(emptyLbl);
+
   const allLbl = document.createElement('label');
   const allCb  = document.createElement('input');
   allCb.type = 'checkbox';
@@ -834,6 +859,36 @@ function populateToolList(area, sub) {
 function selectedTools() {
   return [...toolCheckList.querySelectorAll('input[type=checkbox][data-tool-item="1"]:checked')]
     .map(cb => cb.value);
+}
+
+function includeToolsEmpty() {
+  const emptyCb = document.getElementById('toolToggleEmpty');
+  return emptyCb ? !!emptyCb.checked : true;
+}
+
+function filterOutEmptyOnlyTools(data) {
+  const tc = colMapping.toolCol;
+  const pc = colMapping.productCol;
+
+  const rowsByTool = new Map();
+  for (const row of data) {
+    const toolId = row[tc];
+    if (!toolId) continue;
+    if (!rowsByTool.has(toolId)) rowsByTool.set(toolId, []);
+    rowsByTool.get(toolId).push(row);
+  }
+
+  const toolsWithProducts = new Set();
+  for (const [toolId, rows] of rowsByTool.entries()) {
+    const loc = resolveArea(toolId);
+    const hasAssignedProduct = rows.some((row) => {
+      const product = normalizeProductForStats(row[pc], loc.area, toolId);
+      return !isEmptyProductForStats(product);
+    });
+    if (hasAssignedProduct) toolsWithProducts.add(toolId);
+  }
+
+  return data.filter((row) => toolsWithProducts.has(row[tc]));
 }
 
 function isToolFilterActive() {
@@ -871,6 +926,7 @@ async function fetchAndRender() {
   const sub  = filterSub.value;
   let checkedTools = selectedTools();
   const toolFilterActive = isToolFilterActive();
+  const showEmptyTools = includeToolsEmpty();
   const tc = colMapping.toolCol;
   const productQuery = productSearch.value.trim();
   const coolantQuery = String(filterCoolant?.value || '').toUpperCase();
@@ -887,6 +943,10 @@ async function fetchAndRender() {
     visibleData = visibleData.filter((row) => getHdmxCoolant(row[tc]) === coolantQuery);
   }
 
+  if (!showEmptyTools) {
+    visibleData = filterOutEmptyOnlyTools(visibleData);
+  }
+
   const productFilterResult = applyProductToolFilter(visibleData, productQuery);
   visibleData = productFilterResult.rows;
 
@@ -899,7 +959,7 @@ async function fetchAndRender() {
   renderMachineGrid(
     visibleData,
     toolFilterActive ? checkedTools : [],
-    !productFilterResult.filtered,
+    !productFilterResult.filtered && showEmptyTools,
     area === 'HDMX' ? coolantQuery : ''
   );
   recordCount.textContent = `${visibleData.length} rows`;
@@ -909,7 +969,7 @@ async function fetchAndRender() {
       : `No tools found with product "${productQuery}" for the selected filters.`);
   } else {
     setStatus(visibleData.length
-      ? 'Data displayed from local cache.'
+      ? ''
       : 'No data for the selected filters.');
   }
 }
@@ -956,15 +1016,15 @@ function normalizeProductForStats(value, area = '', toolId = '') {
   const upper = p.toUpperCase();
 
   if (String(area || '').toUpperCase() === 'HDBI') {
-    if (isHdbiGmmTool(toolId) && upper.startsWith('GMM')) return 'MPE_GMM';
-    if (HDBI_GMM_PRODUCTS.has(upper)) return 'MPE_GMM';
+    if (isHdbiGmmTool(toolId) && upper.startsWith('GMM')) return 'GMM';
+    if (HDBI_GMM_PRODUCTS.has(upper)) return 'GMM';
   }
 
   if (String(area || '').toUpperCase() === 'HDMX') {
     return normalizeHdmxProductForStats(p);
   }
 
-  return p;
+  return stripMpePrefix(p);
 }
 
 function isEmptyProductForStats(product) {
@@ -1055,7 +1115,7 @@ function buildStatsByBucket(data) {
   // If product filter is active, do not inject empty tools because the grid also
   // hides tools without at least one matching product.
   const hasProductFilter = String(productSearch.value || '').trim().length > 0;
-  if (!hasProductFilter) {
+  if (!hasProductFilter && includeToolsEmpty()) {
     const selectedTokens = selectedTools();
     const toolFilterActive = isToolFilterActive();
     const existingHdmxDigits = new Set(
@@ -1270,7 +1330,7 @@ function renderUsageStats(data) {
   if (!statsGrid) return;
 
   const activeArea = filterArea.value;
-  if (activeArea === 'PPV') {
+  if (activeArea === 'PPV' || activeArea === 'HDBI') {
     if (statsSection) statsSection.style.display = 'none';
     statsGrid.innerHTML = '';
     return;
@@ -1403,6 +1463,84 @@ async function renderHdmxInlineChanges(container, appendMode = false) {
 }
 
 // ─── HDBI inline recent-changes card ─────────────────────────────────────────
+async function renderHdbiSubInlineChanges(container, sub) {
+  container.innerHTML = `
+    <h4>&#9719; Recent Allocation Changes &mdash; HDBI ${sub || ''}</h4>
+    <p class="hdmx-changes-subtitle">Changes detected across the last 3 recorded work periods (up to 2 days).</p>
+    <div class="hdmx-changes-toolbar">
+      <input type="text" class="filter-input changes-search-input hdbi-sub-changes-search" placeholder="Filter by machine, cell or product…" />
+    </div>
+    <div class="hdmx-changes-body"><p class="changes-loading"><span class="spinner"></span> Loading…</p></div>
+  `;
+
+  const searchInput = container.querySelector('.hdbi-sub-changes-search');
+  const bodyDiv     = container.querySelector('.hdmx-changes-body');
+
+  async function loadAndRender(filterText = '') {
+    if (!_changesData.length) {
+      try {
+        const params = mappingParams();
+        const result = await apiFetch(`/api/changes?${params}`);
+        _changesData = result.changes || [];
+      } catch (err) {
+        bodyDiv.innerHTML = `<p class="changes-error">Error loading changes: ${err.message}</p>`;
+        return;
+      }
+    }
+
+    const subChanges = _changesData.filter(ch => {
+      const loc = resolveArea(ch.machine || '');
+      return loc.area === 'HDBI' && loc.sub === sub;
+    });
+    const q = filterText.trim().toLowerCase();
+
+    const groups = new Map();
+    for (const ch of subChanges) {
+      const gKey = `${ch.fromWW}|${ch.fromDay}\u2192${ch.toWW}|${ch.toDay}`;
+      if (!groups.has(gKey)) {
+        groups.set(gKey, { from: { ww: ch.fromWW, day: ch.fromDay }, to: { ww: ch.toWW, day: ch.toDay }, items: [] });
+      }
+      groups.get(gKey).items.push(ch);
+    }
+
+    let html = '';
+    for (const [, group] of groups) {
+      const items = q
+        ? group.items.filter(c =>
+            (c.machine    || '').toLowerCase().includes(q) ||
+            (c.cell       || '').toLowerCase().includes(q) ||
+            (c.oldProduct || '').toLowerCase().includes(q) ||
+            (c.newProduct || '').toLowerCase().includes(q)
+          )
+        : group.items;
+      if (!items.length) continue;
+
+      const fromLabel = formatChangePeriod(group.from.ww, group.from.day);
+      const toLabel   = formatChangePeriod(group.to.ww,   group.to.day);
+      html += `<div class="changes-group">
+        <div class="changes-group-header">
+          <span class="changes-period-from">${fromLabel}</span>
+          <span class="changes-arrow">&#8594;</span>
+          <span class="changes-period-to">${toLabel}</span>
+          <span class="changes-count">${items.length} change${items.length !== 1 ? 's' : ''}</span>
+        </div>
+        ${renderChangesTable(items)}
+      </div>`;
+    }
+
+    if (!html) {
+      bodyDiv.innerHTML = subChanges.length
+        ? '<p class="changes-empty">No changes match the current filter.</p>'
+        : `<p class="changes-empty">No allocation changes detected in HDBI ${sub} in the last 2 days.</p>`;
+    } else {
+      bodyDiv.innerHTML = html;
+    }
+  }
+
+  searchInput.addEventListener('input', () => loadAndRender(searchInput.value));
+  await loadAndRender('');
+}
+
 async function renderHdbiInlineChanges(container, appendMode = false) {
   let root;
   if (appendMode) {
@@ -1617,9 +1755,27 @@ function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = t
   const sections = buildSectionPlanFromData(byTool);
   const activeArea = activeAreaFilter;
   const ppvStatsByBucket = activeArea === 'PPV' ? buildStatsByBucket(data) : null;
+  const hdbiStatsByBucket = activeArea === 'HDBI' ? buildStatsByBucket(data) : null;
 
   let totalCards = 0;
   for (const section of sections) {
+    if (activeArea === 'HDBI' && section.area === 'HDBI' && section.sub) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'hdbi-stats-wrapper section-inline-stats';
+
+      const statsCard = document.createElement('article');
+      const stats = hdbiStatsByBucket.get(statsBucketKey('HDBI', section.sub)) || createEmptyStats();
+      renderAreaStatsCard(statsCard, 'HDBI', section.sub, stats);
+      wrapper.appendChild(statsCard);
+
+      const changesPanel = document.createElement('div');
+      changesPanel.className = 'hdbi-inline-changes-panel';
+      wrapper.appendChild(changesPanel);
+      renderHdbiSubInlineChanges(changesPanel, section.sub);
+
+      machineGrid.appendChild(wrapper);
+    }
+
     if (activeArea === 'PPV' && section.area === 'PPV' && section.sub) {
       const wrapper = document.createElement('div');
       wrapper.className = 'ppv-stats-wrapper section-inline-stats';
@@ -1642,6 +1798,7 @@ function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = t
 
     const secHeader = document.createElement('div');
     secHeader.className = `section-header area-bg-${section.area}`;
+    if (section.sub) secHeader.dataset.sub = section.sub;
     secHeader.innerHTML = `
       <span class="section-area">${section.area}</span>
       ${section.sub ? `<span class="section-sub">${section.sub}</span>` : ''}
@@ -1651,6 +1808,15 @@ function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = t
 
     const secGrid = document.createElement('div');
     secGrid.className = 'section-cards';
+    if (section.sub) secGrid.dataset.sub = section.sub;
+    if (section.area === 'HDMX') {
+      const activeCols = document.querySelector('.hdmx-cols-btn.is-active');
+      if (activeCols) secGrid.dataset.hdmxCols = activeCols.dataset.cols;
+    }
+    if (section.area === 'PPV') {
+      const activeCols = document.querySelector('.ppv-cols-btn.is-active');
+      if (activeCols) secGrid.dataset.ppvCols = activeCols.dataset.cols;
+    }
 
     let sectionCards = 0;
     for (const toolId of section.tools) {
@@ -1893,13 +2059,11 @@ function buildHdbiLayoutCard(toolId, rows, area, sub, layoutKey = '') {
   // Header
   const header = document.createElement('div');
   header.className = 'machine-card-header';
-  header.innerHTML = `<span>${formatMachineDisplayName(toolId)}</span>`;
-  if (sub || area) {
-    const badge = document.createElement('span');
-    badge.className = 'badge-sub';
-    badge.textContent = sub || area || '';
-    header.appendChild(badge);
-  }
+
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'machine-card-title-center';
+  titleSpan.textContent = formatMachineDisplayName(toolId);
+  header.appendChild(titleSpan);
   card.appendChild(header);
 
   // 2D Layout Table
@@ -1907,6 +2071,7 @@ function buildHdbiLayoutCard(toolId, rows, area, sub, layoutKey = '') {
   const pc = colMapping.productCol;
 
   const key = layoutKey || getHdbiLayoutKey(toolId) || toolId;
+  card.dataset.layoutKey = key.replace(/\s+/g, '-');
   const layout = HDBI_LAYOUTS[key];
   if (!layout) {
     const fallback = document.createElement('div');
@@ -1954,7 +2119,7 @@ function buildHdbiLayoutCard(toolId, rows, area, sub, layoutKey = '') {
 
       const cellKey = col ? `${col}${rowId}` : rowId;
       const dataRow = cellMap.get(cellKey.toUpperCase());
-      const product = dataRow ? (dataRow[pc] == null || dataRow[pc] === '' ? 'Empty' : dataRow[pc]) : 'Empty';
+      const product = normalizeProductForCard(toolId, dataRow ? dataRow[pc] : '');
 
       td.innerHTML = `<div class="cell-slot ${productClass(product)}" data-tool="${toolId}" data-cell="${cellKey}" data-product="${product}">${product}</div>`;
       tr.appendChild(td);
@@ -1996,27 +2161,24 @@ function buildMachineCard(toolId, rows, area, sub) {
   // Header
   const header = document.createElement('div');
   header.className = 'machine-card-header';
-  header.innerHTML = `<span>${formatMachineDisplayName(toolId)}</span>`;
-  if (sub || area) {
-    const badgeGroup = document.createElement('div');
-    badgeGroup.className = 'machine-card-badges';
 
-    const areaBadge = document.createElement('span');
-    areaBadge.className = 'badge-sub';
-    areaBadge.textContent = sub || area || '';
-    badgeGroup.appendChild(areaBadge);
+  if (String(area || '').toUpperCase() === 'HDMX') {
+    // HDMX layout: [coolant badge left] [tool name truly centered] [spacer right]
+    header.classList.add('machine-card-header-hdmx');
 
-    if (String(area || '').toUpperCase() === 'HDMX') {
-      const coolant = getHdmxCoolant(toolId);
-      if (coolant) {
-        const coolantBadge = document.createElement('span');
-        coolantBadge.className = 'badge-sub';
-        coolantBadge.textContent = coolant;
-        badgeGroup.appendChild(coolantBadge);
-      }
-    }
+    const coolant = getHdmxCoolant(toolId);
+    const leftBadge = document.createElement('span');
+    leftBadge.className = 'badge-sub badge-coolant';
+    leftBadge.textContent = coolant || '';
 
-    header.appendChild(badgeGroup);
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'machine-card-title-center';
+    titleSpan.textContent = formatMachineDisplayName(toolId);
+
+    header.appendChild(leftBadge);
+    header.appendChild(titleSpan);
+  } else {
+    header.innerHTML = `<span class="machine-card-title-center">${formatMachineDisplayName(toolId)}</span>`;
   }
   card.appendChild(header);
 
@@ -2225,6 +2387,29 @@ function showDetailModal(toolId, rows) {
 closeDetailBtn.addEventListener('click', () => { detailModal.style.display = 'none'; });
 detailModal.addEventListener('click', (e) => { if (e.target === detailModal) detailModal.style.display = 'none'; });
 
+// ─── HDMX layout selector ────────────────────────────────────────────────────
+for (const btn of document.querySelectorAll('.hdmx-cols-btn')) {
+  btn.addEventListener('click', async () => {
+    document.querySelectorAll('.hdmx-cols-btn').forEach(b => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    // Re-apply data-hdmx-cols to all HDMX section-cards already in the DOM
+    document.querySelectorAll('.area-bg-HDMX + .section-cards').forEach(grid => {
+      grid.dataset.hdmxCols = btn.dataset.cols;
+    });
+  });
+}
+
+// ─── PPV layout selector ─────────────────────────────────────────────────────
+for (const btn of document.querySelectorAll('.ppv-cols-btn')) {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.ppv-cols-btn').forEach(b => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    document.querySelectorAll('.area-bg-PPV + .section-cards').forEach(grid => {
+      grid.dataset.ppvCols = btn.dataset.cols;
+    });
+  });
+}
+
 // ─── Product search ───────────────────────────────────────────────────────────
 productSearchBtn.addEventListener('click', doProductSearch);
 productSearch.addEventListener('keydown', (e) => { if (e.key === 'Enter') doProductSearch(); });
@@ -2254,6 +2439,8 @@ clearBtn.addEventListener('click', async () => {
   subAreaSection.style.display = 'none';
   if (coolantSection) coolantSection.style.display = 'none';
   if (filterCoolant) filterCoolant.value = '';
+  if (hdmxLayoutSection) hdmxLayoutSection.style.display = 'none';
+  if (ppvLayoutSection)  ppvLayoutSection.style.display  = 'none';
   productSearch.value = '';
   areaBadge.textContent = '—';
   populateToolList('', '');
@@ -2365,6 +2552,8 @@ saveMappingBtn.addEventListener('click', async () => {
 // ─── Utility ──────────────────────────────────────────────────────────────────
 function setStatus(html) {
   statusMsg.innerHTML = html;
+  const bar = statusMsg.closest('.status-bar');
+  if (bar) bar.style.display = html ? '' : 'none';
 }
 
 // ─── Recent Changes modal ─────────────────────────────────────────────────────
@@ -2383,13 +2572,15 @@ function renderChangesTable(items) {
       <th>Machine</th><th>Cell</th><th>Previous Product</th><th>New Product</th><th>Type</th>
     </tr></thead><tbody>`;
   for (const ch of items) {
+    const oldProd = stripMpePrefix(ch.oldProduct || '');
+    const newProd = stripMpePrefix(ch.newProduct || '');
     const type = !ch.oldProduct ? 'Added' : !ch.newProduct ? 'Removed' : 'Changed';
     const cls  = type === 'Added' ? 'change-added' : type === 'Removed' ? 'change-removed' : 'change-modified';
     html += `<tr>
-      <td>${ch.machine || '—'}</td>
+      <td>${formatMachineDisplayName(ch.machine) || '—'}</td>
       <td>${ch.cell || '—'}</td>
-      <td class="change-old">${ch.oldProduct || '<em class="change-empty">Empty</em>'}</td>
-      <td class="change-new">${ch.newProduct || '<em class="change-empty">Empty</em>'}</td>
+      <td class="change-old">${oldProd || '<em class="change-empty">Empty</em>'}</td>
+      <td class="change-new">${newProd || '<em class="change-empty">Empty</em>'}</td>
       <td><span class="change-badge ${cls}">${type}</span></td>
     </tr>`;
   }

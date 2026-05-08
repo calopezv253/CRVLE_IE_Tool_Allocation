@@ -21,6 +21,10 @@
     <button class="btn btn-icon btn-changes" id="changesBtn" title="Recent Allocation Changes (last 2 days)">&#9719;</button>
     <button class="btn btn-icon btn-planned" id="plannedBtn" title="Planned Product Conversions">&#128197;</button>
     <button class="btn btn-icon" id="settingsBtn" title="Column Mapping Settings">⚙</button>
+    <button class="btn btn-icon btn-theme-toggle" id="themeToggleBtn" title="Toggle Dark / Light mode" aria-label="Toggle dark mode">
+      <span class="theme-icon theme-icon-dark">🌙</span>
+      <span class="theme-icon theme-icon-light" style="display:none">☀️</span>
+    </button>
   </div>
 </header>
 
@@ -53,6 +57,28 @@
         <option value="HFE">HFE</option>
         <option value="EGDI">EGDI</option>
       </select>
+    </div>
+
+    <div class="sidebar-section" id="hdmxLayoutSection" style="display:none">
+      <label class="filter-label">Layout (machines / row)</label>
+      <div class="hdmx-cols-selector">
+        <button class="btn btn-sm hdmx-cols-btn" data-cols="1">1</button>
+        <button class="btn btn-sm hdmx-cols-btn" data-cols="2">2</button>
+        <button class="btn btn-sm hdmx-cols-btn" data-cols="3">3</button>
+        <button class="btn btn-sm hdmx-cols-btn is-active" data-cols="4">4</button>
+        <button class="btn btn-sm hdmx-cols-btn" data-cols="5">5</button>
+        <button class="btn btn-sm hdmx-cols-btn" data-cols="6">6</button>
+      </div>
+    </div>
+
+    <div class="sidebar-section" id="ppvLayoutSection" style="display:none">
+      <label class="filter-label">Layout (machines / row)</label>
+      <div class="ppv-cols-selector">
+        <button class="btn btn-sm ppv-cols-btn" data-cols="1">1</button>
+        <button class="btn btn-sm ppv-cols-btn" data-cols="2">2</button>
+        <button class="btn btn-sm ppv-cols-btn is-active" data-cols="3">3</button>
+        <button class="btn btn-sm ppv-cols-btn" data-cols="4">4</button>
+      </div>
     </div>
 
     <div class="sidebar-section">
@@ -279,5 +305,31 @@
 </div>
 
 <script src="app.js"></script>
+<script>
+  // ── Dark / Light mode toggle ──────────────────────────────────────────────
+  (function () {
+    const btn       = document.getElementById('themeToggleBtn');
+    const iconDark  = btn.querySelector('.theme-icon-dark');
+    const iconLight = btn.querySelector('.theme-icon-light');
+    const STORAGE_KEY = 'toolDash_theme';
+
+    function applyTheme(dark) {
+      document.body.classList.toggle('dark', dark);
+      iconDark.style.display  = dark ? 'none'   : '';
+      iconLight.style.display = dark ? ''        : 'none';
+      btn.title = dark ? 'Switch to Light mode' : 'Switch to Dark mode';
+    }
+
+    // Load saved preference (default: light)
+    const saved = localStorage.getItem(STORAGE_KEY);
+    applyTheme(saved === 'dark');
+
+    btn.addEventListener('click', function () {
+      const isDark = document.body.classList.contains('dark');
+      applyTheme(!isDark);
+      localStorage.setItem(STORAGE_KEY, !isDark ? 'dark' : 'light');
+    });
+  })();
+</script>
 </body>
 </html>

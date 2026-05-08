@@ -100,18 +100,21 @@ h4 { font-size: 16px; }
 .layout {
   display: flex;
   margin-top: var(--topbar-h);
-  min-height: calc(100vh - var(--topbar-h) - var(--legend-h));
+  height: calc(100vh - var(--topbar-h) - var(--legend-h));
+  overflow: hidden;
 }
 
 /* ─── Sidebar ────────────────────────────────────── */
 .sidebar {
   width: var(--sidebar-w);
   min-width: var(--sidebar-w);
+  height: 100%;
   background: var(--clr-surface);
   border-right: 1px solid var(--clr-border);
   overflow-y: auto;
   padding: 16px 12px;
   display: flex; flex-direction: column; gap: 4px;
+  flex-shrink: 0;
 }
 .sidebar-section { margin-bottom: 14px; }
 .filter-label {
@@ -165,12 +168,45 @@ h4 { font-size: 16px; }
 .btn-ghost     { background: transparent; color: var(--clr-text-muted); }
 .btn-ghost:hover     { background: #e6f0fa; color: var(--clr-text); }
 .btn-sm  { padding: 6px 10px; font-size: 12px; }
+
+/* HDMX layout selector buttons */
+.hdmx-cols-selector {
+  display: flex; gap: 4px; flex-wrap: wrap;
+}
+.hdmx-cols-btn {
+  flex: 1; padding: 5px 4px; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--clr-border); border-radius: var(--radius-sm);
+  background: #fff; color: var(--clr-text);
+  transition: all var(--transition);
+}
+.hdmx-cols-btn:hover { background: #e6f0fa; border-color: var(--clr-primary); }
+.hdmx-cols-btn.is-active {
+  background: var(--clr-primary); color: #fff;
+  border-color: var(--clr-primary);
+}
+
+/* PPV layout selector buttons (same style as HDMX) */
+.ppv-cols-selector {
+  display: flex; gap: 4px; flex-wrap: wrap;
+}
+.ppv-cols-btn {
+  flex: 1; padding: 5px 4px; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--clr-border); border-radius: var(--radius-sm);
+  background: #fff; color: var(--clr-text);
+  transition: all var(--transition);
+}
+.ppv-cols-btn:hover { background: #e6f0fa; border-color: var(--clr-primary); }
+.ppv-cols-btn.is-active {
+  background: var(--clr-primary); color: #fff;
+  border-color: var(--clr-primary);
+}
 .btn-icon{ padding: 6px 8px; background: rgba(255,255,255,.15); color: #fff; font-size: 16px; }
 .btn-icon:hover { background: rgba(255,255,255,.3); }
 
 /* ─── Main ───────────────────────────────────────── */
 .main {
   flex: 1; overflow-y: auto;
+  height: 100%;
   padding: 20px;
   display: flex; flex-direction: column; gap: 16px;
 }
@@ -324,6 +360,20 @@ h4 { font-size: 16px; }
   text-align: right;
 }
 
+/* HDMX coolant stats: enforce equal-size columns/cells */
+.stats-card-hdmx-coolant .stats-product-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.stats-card-hdmx-coolant .stats-product-table th,
+.stats-card-hdmx-coolant .stats-product-table td {
+  width: 16.66%;
+  height: 40px;
+  text-align: left !important;
+  vertical-align: middle;
+}
+
 /* Tools column header: left-aligned, even when last column */
 .stats-product-table th.th-tools,
 .stats-product-table td.stats-tools-cell {
@@ -397,7 +447,36 @@ h4 { font-size: 16px; }
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
+}
+
+/* Colored separator line between PPV sub-area groups (2nd and 3rd wrapper) */
+.machine-grid > .ppv-stats-wrapper:not(:first-child) {
+  margin-top: 32px;
+  padding-top: 28px;
+  position: relative;
+}
+.machine-grid > .ppv-stats-wrapper:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--clr-ppv) 0%, rgba(255,179,107,.3) 100%);
+  border-radius: 2px;
+}
+
+/* Cap the stats card height so the product table scrolls */
+.ppv-stats-wrapper .stats-card {
+  max-height: 460px;
+  overflow: hidden;
+}
+
+/* Changes panel: same cap, scroll internally if needed */
+.ppv-stats-wrapper .ppv-inline-changes-panel {
+  max-height: 460px;
+  overflow-y: auto;
 }
 
 .ppv-inline-changes-panel {
@@ -428,6 +507,65 @@ h4 { font-size: 16px; }
 
 @media (max-width: 900px) {
   .ppv-stats-wrapper { grid-template-columns: 1fr; }
+}
+
+/* ─── HDBI stats + changes side-by-side (same layout as PPV) ─ */
+.hdbi-stats-wrapper {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.machine-grid > .hdbi-stats-wrapper:not(:first-child) {
+  margin-top: 32px;
+  padding-top: 28px;
+  position: relative;
+}
+.machine-grid > .hdbi-stats-wrapper:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--clr-hdbi) 0%, rgba(127,179,255,.3) 100%);
+  border-radius: 2px;
+}
+
+.hdbi-stats-wrapper .stats-card {
+  max-height: 460px;
+  overflow: hidden;
+}
+
+.hdbi-stats-wrapper .hdbi-inline-changes-panel {
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.hdbi-inline-changes-panel {
+  background: #ffffff;
+  border: 1px solid var(--clr-border);
+  border-left: 4px solid var(--clr-hdbi);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+}
+
+.hdbi-inline-changes-panel h4 {
+  color: #000; font-weight: 700;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.hdbi-inline-changes-panel .hdmx-changes-body,
+.hdbi-inline-changes-panel .hdmx-changes-body * { font-weight: 400; }
+.hdbi-inline-changes-panel .changes-group-header,
+.hdbi-inline-changes-panel .changes-group-header * { font-weight: 700; }
+.hdbi-inline-changes-panel .change-new             { font-weight: 700; }
+.hdbi-inline-changes-panel .change-badge           { font-weight: 700; }
+.hdbi-inline-changes-panel .changes-table th       { font-weight: 700; }
+.hdbi-inline-changes-panel .hdbi-sub-changes-search { font-weight: 400 !important; width: 100%; max-width: 100%; }
+
+@media (max-width: 900px) {
+  .hdbi-stats-wrapper { grid-template-columns: 1fr; }
 }
 
 .area-tabs {
@@ -494,6 +632,62 @@ h4 { font-size: 16px; }
   background: #f0f6ff;
 }
 
+/* HDBI sub-area cards: 5082 gets 66%, 4786 gets 33% */
+.area-bg-HDBI + .section-cards .machine-card {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.area-bg-HDBI + .section-cards .machine-card[data-layout-key="HDBI-5082"] {
+  flex: 2 1 0;
+}
+.area-bg-HDBI + .section-cards .machine-card[data-layout-key="HDBI-4786"] {
+  flex: 1 1 0;
+}
+
+/* BDC cards: only 2 rows × 1 col — keep them compact, don't stretch */
+.area-bg-HDBI + .section-cards .machine-card[data-layout-key="BDC-5257"],
+.area-bg-HDBI + .section-cards .machine-card[data-layout-key="BDC-4944"] {
+  flex: 0 0 auto;
+  width: 480px;
+  max-width: 480px;
+}
+
+/* HDMX cards: default 4 per row (overridden by data-hdmx-cols) */
+.area-bg-HDMX + .section-cards .machine-card {
+  flex: 1 1 calc(25% - 9px);
+  min-width: 0;
+  max-width: calc(25% - 9px);
+}
+.area-bg-HDMX + .section-cards[data-hdmx-cols="1"] .machine-card { flex: 1 1 100%;             max-width: 100%; }
+.area-bg-HDMX + .section-cards[data-hdmx-cols="2"] .machine-card { flex: 1 1 calc(50% - 6px);  max-width: calc(50% - 6px); }
+.area-bg-HDMX + .section-cards[data-hdmx-cols="3"] .machine-card { flex: 1 1 calc(33.33% - 8px); max-width: calc(33.33% - 8px); }
+.area-bg-HDMX + .section-cards[data-hdmx-cols="4"] .machine-card { flex: 1 1 calc(25% - 9px);  max-width: calc(25% - 9px); }
+.area-bg-HDMX + .section-cards[data-hdmx-cols="5"] .machine-card { flex: 1 1 calc(20% - 10px); max-width: calc(20% - 10px); }
+.area-bg-HDMX + .section-cards[data-hdmx-cols="6"] .machine-card { flex: 1 1 calc(16.66% - 10px); max-width: calc(16.66% - 10px); }
+
+/* PPV cards: default 3 per row (overridden by data-ppv-cols) */
+.area-bg-PPV + .section-cards[data-ppv-cols="1"] .machine-card { flex: 1 1 100%;               max-width: 100%; }
+.area-bg-PPV + .section-cards[data-ppv-cols="2"] .machine-card { flex: 1 1 calc(50% - 6px);    max-width: calc(50% - 6px); }
+.area-bg-PPV + .section-cards[data-ppv-cols="3"] .machine-card { flex: 1 1 calc(33.33% - 8px); max-width: calc(33.33% - 8px); }
+.area-bg-PPV + .section-cards[data-ppv-cols="4"] .machine-card { flex: 1 1 calc(25% - 9px);    max-width: calc(25% - 9px); }
+.area-bg-PPV + .section-cards[data-ppv-cols="5"] .machine-card { flex: 1 1 calc(20% - 10px);   max-width: calc(20% - 10px); }
+.area-bg-PPV + .section-cards[data-ppv-cols="6"] .machine-card { flex: 1 1 calc(16.66% - 10px); max-width: calc(16.66% - 10px); }
+
+/* HST and SST cards: 2 per row, filling full width */
+.section-cards[data-sub="HST"] .machine-card,
+.section-cards[data-sub="SST"] .machine-card {
+  flex: 1 1 calc(50% - 6px);
+  min-width: 0;
+  max-width: calc(50% - 6px);
+}
+
+/* PTC cards: 5 per row */
+.section-cards[data-sub="PTC"] .machine-card {
+  flex: 1 1 calc(20% - 10px);
+  min-width: 0;
+  max-width: calc(20% - 10px);
+}
+
 /* Area background tints for section headers */
 .area-bg-HDBI { background: #003c71; color: var(--clr-hdbi); }
 .area-bg-HDMX { background: #102b20; color: var(--clr-hdmx); }
@@ -518,27 +712,138 @@ h4 { font-size: 16px; }
   padding: 11px 16px;
   font-size: 15px; font-weight: 700; letter-spacing: .3px;
   border-bottom: 1px solid rgba(255,255,255,.08);
-  display: flex; justify-content: space-between; align-items: center;
-}
-.machine-card-badges {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.machine-card-header .badge-sub {
-  font-size: 10px; font-weight: 500; padding: 2px 7px;
-  border-radius: 10px; color: #fff;
+  display: flex; justify-content: center; align-items: center;
 }
 
 /* Area colour themes on header */
 .area-HDBI .machine-card-header { background: #003c71; color: var(--clr-hdbi); }
-.area-HDBI .badge-sub           { background: #0071c5; }
 .area-HDMX .machine-card-header { background: #102b20; color: var(--clr-hdmx); }
-.area-HDMX .badge-sub           { background: var(--clr-hdmx); }
 .area-PPV  .machine-card-header { background: #332113; color: var(--clr-ppv); }
-.area-PPV  .badge-sub           { background: var(--clr-ppv); }
 .area-CLASS .machine-card-header { background: #2a1838; color: #d6a8ff; }
-.area-CLASS .badge-sub           { background: #a855f7; }
+
+/* PPV: larger product text inside cards (HST/SST layout table + PTC regular cells) */
+.area-PPV .hdbi-cell .cell-slot { font-size: 13px; }
+.area-PPV .cell-slot             { font-size: 14px; }
+
+/* PPV multi-column layouts: smaller text, full product name visible */
+.area-bg-PPV + .section-cards[data-ppv-cols="4"] .machine-card .hdbi-cell .cell-slot,
+.area-bg-PPV + .section-cards[data-ppv-cols="5"] .machine-card .hdbi-cell .cell-slot,
+.area-bg-PPV + .section-cards[data-ppv-cols="6"] .machine-card .hdbi-cell .cell-slot {
+  font-size: 9px;
+  padding: 2px 3px;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  line-height: 1.2;
+}
+
+.area-bg-PPV + .section-cards[data-ppv-cols="3"] .machine-card .hdbi-cell .cell-slot {
+  font-size: 12px;
+  padding: 2px 4px;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  line-height: 1.3;
+}
+
+.area-bg-PPV + .section-cards[data-ppv-cols="4"] .machine-card .cell-slot,
+.area-bg-PPV + .section-cards[data-ppv-cols="5"] .machine-card .cell-slot,
+.area-bg-PPV + .section-cards[data-ppv-cols="6"] .machine-card .cell-slot {
+  font-size: 9px;
+  padding: 2px 4px;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  line-height: 1.2;
+}
+
+.area-bg-PPV + .section-cards[data-ppv-cols="3"] .machine-card .cell-slot {
+  font-size: 12px;
+  padding: 2px 6px;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  line-height: 1.3;
+}
+
+/* PTC sub-area: center product names in all column layouts */
+.section-cards[data-sub="PTC"] .machine-card .cell-slot {
+  justify-content: center;
+  text-align: center;
+}
+
+/* PTC: 3 per row — larger, fully readable product name */
+.section-cards[data-sub="PTC"][data-ppv-cols="3"] .machine-card .cell-slot {
+  font-size: 15px;
+  padding: 4px 6px;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  line-height: 1.35;
+}
+
+/* PTC: 4 per row — larger, fully readable product name */
+.section-cards[data-sub="PTC"][data-ppv-cols="4"] .machine-card .cell-slot {
+  font-size: 13px;
+  padding: 3px 4px;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  line-height: 1.35;
+}
+
+/* HDBI: larger product text inside layout table cards */
+.area-HDBI .hdbi-cell .cell-slot { font-size: 13px; }
+
+/* HDMX: larger product text inside regular cells */
+.area-HDMX .cell-slot            { font-size: 14px; }
+
+/* 6-per-row: smaller text so full product name is visible */
+.area-bg-HDMX + .section-cards[data-hdmx-cols="6"] .machine-card .cell-slot {
+  font-size: 11px;
+  padding: 3px 4px;
+  white-space: normal;
+  word-break: break-word;
+  overflow: visible;
+  line-height: 1.3;
+}
+
+/* Coolant badge (HDMX only) */
+.badge-sub {
+  font-size: 10px; font-weight: 600; padding: 2px 8px;
+  border-radius: 10px; color: #fff; white-space: nowrap; flex-shrink: 0;
+}
+.area-HDMX .badge-coolant { background: #0d3a5c; color: #7fb3ff; }
+
+/* HDMX header: coolant badge left | tool name truly centered | spacer right */
+.machine-card-header-hdmx {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 6px;
+}
+/* Coolant badge sits in column 1, left-aligned */
+.machine-card-header-hdmx .badge-coolant {
+  justify-self: start;
+}
+/* Pseudo-element occupies column 3 to balance col 1 */
+.machine-card-header-hdmx::after {
+  content: '';
+}
+.machine-card-title-center {
+  flex: 1;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.area-HDMX .badge-coolant {
+  background: #0d3a5c;
+  color: #7fb3ff;
+}
 
 /* ─── Cell list inside a machine card ────────────── */
 .cell-list {
@@ -570,6 +875,12 @@ h4 { font-size: 16px; }
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .cell-slot:hover { filter: brightness(.9); }
+
+/* HDMX: product name centered horizontally */
+.area-HDMX .cell-slot {
+  justify-content: center;
+  text-align: center;
+}
 
 /* Cell state colours */
 .cell-idle        { background: var(--clr-idle);      color: var(--clr-text-muted); }
@@ -1094,3 +1405,412 @@ h4 { font-size: 16px; }
   background: #fdecea;
   border-color: #c0392b;
 }
+
+/* ─── Theme toggle button ────────────────────────── */
+.btn-theme-toggle {
+  font-size: 18px;
+  min-width: 36px;
+}
+.theme-icon { line-height: 1; }
+
+/* ═══════════════════════════════════════════════════
+   DARK MODE  — body.dark
+   Intel brand gradient on topbar is preserved.
+   All surfaces shift to deep navy/slate tones.
+   ═══════════════════════════════════════════════════ */
+
+body.dark {
+  --clr-bg          : #0b1826;
+  --clr-surface     : #102035;
+  --clr-border      : #1e3a58;
+  --clr-text        : #c8ddf0;
+  --clr-text-muted  : #6a90b3;
+  --clr-primary     : #1e90ff;
+  --clr-primary-dk  : #0071c5;
+  --clr-hdbi        : #7fb3ff;
+  --clr-hdmx        : #66d38e;
+  --clr-ppv         : #ffb36b;
+  --clr-idle        : #152840;
+  --clr-tlo         : #2e1f4a;
+  --clr-highlight   : #ffca54;
+  --clr-occupied    : #1e4a7a;
+  --shadow          : 0 8px 24px rgba(0,0,0,.55);
+  --shadow-md       : 0 18px 40px rgba(0,0,0,.65);
+}
+
+/* ── Body & global ───────────────────────────────── */
+body.dark { background: var(--clr-bg); color: var(--clr-text); }
+
+/* ── Sidebar ─────────────────────────────────────── */
+body.dark .sidebar {
+  background: var(--clr-surface);
+  border-right-color: var(--clr-border);
+}
+
+/* Override the forced black text in sidebar */
+body.dark .sidebar .sidebar-section,
+body.dark .sidebar .sidebar-section * {
+  color: var(--clr-text) !important;
+}
+body.dark .sidebar .filter-label {
+  color: var(--clr-text-muted) !important;
+}
+
+body.dark .filter-select,
+body.dark .filter-input {
+  background: #0d1e30;
+  color: var(--clr-text);
+  border-color: var(--clr-border);
+}
+body.dark .filter-select:focus,
+body.dark .filter-input:focus {
+  border-color: var(--clr-primary);
+  box-shadow: 0 0 0 3px rgba(30,144,255,.18);
+}
+
+body.dark .tool-checklist {
+  background: #0d1e30;
+  border-color: var(--clr-border);
+}
+body.dark .tool-checklist label:hover { background: #1a3050; }
+
+/* Layout selector buttons — dark mode */
+body.dark .hdmx-cols-btn,
+body.dark .ppv-cols-btn {
+  background: #0d1e30;
+  color: var(--clr-text);
+  border-color: var(--clr-border);
+}
+body.dark .hdmx-cols-btn:hover,
+body.dark .ppv-cols-btn:hover {
+  background: #1a3050;
+  border-color: var(--clr-primary);
+}
+body.dark .hdmx-cols-btn.is-active,
+body.dark .ppv-cols-btn.is-active {
+  background: var(--clr-primary);
+  color: #fff;
+  border-color: var(--clr-primary);
+}
+
+/* ── Buttons ─────────────────────────────────────── */
+body.dark .btn-secondary {
+  background: #162d46;
+  color: var(--clr-text);
+  border: 1px solid var(--clr-border);
+}
+body.dark .btn-secondary:hover { background: #1e3d5e; }
+body.dark .btn-ghost { color: var(--clr-text-muted); }
+body.dark .btn-ghost:hover { background: #162d46; color: var(--clr-text); }
+
+/* ── Status bar ──────────────────────────────────── */
+body.dark .status-bar {
+  background: var(--clr-surface);
+  border-color: var(--clr-border);
+  color: var(--clr-text-muted);
+}
+body.dark .record-count { color: var(--clr-text); }
+
+/* ── Area tabs ───────────────────────────────────── */
+body.dark .area-tab {
+  background: #0d1e30;
+  color: var(--clr-text-muted);
+  border-color: var(--clr-border);
+}
+body.dark .area-tab:hover {
+  border-color: var(--clr-primary);
+  color: var(--clr-primary);
+}
+body.dark .area-tab.is-active {
+  background: var(--clr-primary);
+  color: #fff;
+  border-color: var(--clr-primary);
+}
+
+/* ── Stats section ───────────────────────────────── */
+body.dark .stats-section {
+  background: var(--clr-surface);
+  border-color: var(--clr-border);
+}
+body.dark .stats-section-header h3 { color: var(--clr-text); }
+body.dark .stats-note { color: var(--clr-text-muted); }
+
+body.dark .stats-card {
+  background: #0d1e30;
+  border-color: var(--clr-border);
+}
+/* Override forced black text in stats cards */
+body.dark .stats-card,
+body.dark .stats-card * { color: var(--clr-text) !important; }
+
+body.dark .stats-card h4 { color: var(--clr-text) !important; }
+
+body.dark .stats-kpi {
+  background: #152840;
+  border-color: var(--clr-border);
+}
+body.dark .stats-kpi-label { color: var(--clr-text-muted) !important; }
+body.dark .stats-kpi-value { color: var(--clr-text) !important; }
+
+body.dark .stats-products-title { color: var(--clr-text-muted) !important; }
+
+body.dark .stats-product-table th {
+  background: #003c71;
+  color: #ffffff;
+}
+body.dark .stats-product-table td {
+  border-bottom-color: var(--clr-border);
+  color: var(--clr-text) !important;
+}
+body.dark .stats-product-table .stats-tools-cell { color: var(--clr-text) !important; }
+body.dark .stats-product-table tbody tr:hover td { background: #152840; }
+body.dark .stats-empty { color: var(--clr-text-muted) !important; }
+
+/* ── Section cards background ────────────────────── */
+body.dark .section-cards {
+  background: #0d1826;
+  border-color: var(--clr-border);
+}
+
+/* ── Machine cards ───────────────────────────────── */
+body.dark .machine-card {
+  background: var(--clr-surface);
+  border-color: var(--clr-border);
+}
+
+/* Cell ID labels */
+body.dark .cell-id { color: var(--clr-text-muted) !important; }
+
+/* Idle cells get a dark tint */
+body.dark .cell-idle {
+  background: #152840;
+  color: #4a7090;
+}
+
+/* ── HDBI layout table ───────────────────────────── */
+body.dark .hdbi-layout-table th {
+  background: #0d2240;
+  color: var(--clr-text) !important;
+  border-color: var(--clr-border);
+}
+body.dark .hdbi-layout-table td { border-color: var(--clr-border); }
+body.dark .hdbi-layout-table .hdbi-row-label { color: var(--clr-text) !important; }
+
+/* ── Legend bar ──────────────────────────────────── */
+body.dark .legend-bar {
+  background: #0d1826;
+  border-top-color: var(--clr-border);
+  color: var(--clr-text-muted);
+}
+body.dark .legend-title { color: var(--clr-text); }
+
+/* ── Loading overlay ─────────────────────────────── */
+body.dark .loading-overlay { background: rgba(11,24,38,.75); }
+body.dark .loading-box {
+  background: #102035;
+  border-color: var(--clr-border);
+  color: #7fb3ff;
+}
+
+/* ── Modals ──────────────────────────────────────── */
+body.dark .modal {
+  background: #102035;
+  border: 1px solid var(--clr-border);
+  color: var(--clr-text);
+}
+body.dark .modal-title { color: var(--clr-text); }
+body.dark .modal-subtitle { color: var(--clr-text-muted); }
+body.dark .discover-status { color: var(--clr-text-muted); }
+
+body.dark .mapping-row label { color: var(--clr-text); }
+body.dark .mapping-row select {
+  background: #0d1e30;
+  color: var(--clr-text);
+  border-color: var(--clr-border);
+}
+
+/* Detail modal table */
+body.dark .detail-cell-table th {
+  background: #0d2240;
+  color: var(--clr-text);
+  border-bottom-color: var(--clr-border);
+}
+body.dark .detail-cell-table td { border-bottom-color: var(--clr-border); color: var(--clr-text); }
+
+/* ── Changes modal ───────────────────────────────── */
+body.dark .changes-group-header {
+  background: #0d2240;
+  border-left-color: var(--clr-primary);
+}
+body.dark .changes-period-from { color: var(--clr-text-muted); }
+body.dark .changes-period-to   { color: var(--clr-text); }
+
+body.dark .changes-table th {
+  background: #0b1826;
+  border-bottom-color: var(--clr-border);
+  color: var(--clr-text-muted);
+}
+body.dark .changes-table td {
+  border-bottom-color: var(--clr-border);
+  color: var(--clr-text);
+}
+body.dark .changes-table tr:hover td { background: #152840; }
+
+body.dark .change-old   { color: var(--clr-text-muted); }
+body.dark .change-empty { color: var(--clr-text-muted); }
+
+body.dark .change-added    { background: #0f2d1a; color: #6bffa0; }
+body.dark .change-removed  { background: #2d0f14; color: #ff8090; }
+body.dark .change-modified { background: #2d2008; color: #ffd56b; }
+
+/* Force badge colours inside stats-card (HDBI / HDMX inline sections)
+   where the .stats-card * !important rule would otherwise override them */
+body.dark .hdbi-inline-changes-section .change-added,
+body.dark .hdmx-inline-changes-section .change-added  { background: #0f2d1a !important; color: #6bffa0 !important; }
+body.dark .hdbi-inline-changes-section .change-removed,
+body.dark .hdmx-inline-changes-section .change-removed { background: #2d0f14 !important; color: #ff8090 !important; }
+body.dark .hdbi-inline-changes-section .change-modified,
+body.dark .hdmx-inline-changes-section .change-modified { background: #2d2008 !important; color: #ffd56b !important; }
+
+/* ── Inline changes (HDMX / HDBI / PPV panel) ───── */
+body.dark .ppv-inline-changes-panel {
+  background: #0d1e30;
+  border-color: var(--clr-border);
+}
+body.dark .ppv-inline-changes-panel h4 { color: var(--clr-text) !important; }
+body.dark .hdbi-inline-changes-panel {
+  background: #0d1e30;
+  border-color: var(--clr-border);
+}
+body.dark .hdbi-inline-changes-panel h4 { color: var(--clr-text) !important; }
+body.dark .hdmx-inline-changes-section h4,
+body.dark .hdbi-inline-changes-section h4 { color: var(--clr-text) !important; }
+body.dark .hdmx-changes-subtitle { color: var(--clr-text-muted); }
+
+/* ── Planned conversions modal ───────────────────── */
+body.dark .planned-field label { color: var(--clr-text-muted); }
+body.dark .planned-field select,
+body.dark .planned-field input[type="text"],
+body.dark .planned-field input[type="date"] {
+  background: #0d1e30;
+  color: var(--clr-text);
+  border-color: var(--clr-border);
+}
+body.dark .planned-field select:focus,
+body.dark .planned-field input:focus {
+  border-color: var(--clr-primary);
+  box-shadow: 0 0 0 3px rgba(30,144,255,.18);
+}
+body.dark .planned-table-header h3 { color: var(--clr-text); }
+body.dark .planned-table-wrap { border-color: var(--clr-border); }
+body.dark .planned-table th {
+  background: #003c71;
+  color: #fff;
+}
+body.dark .planned-table td {
+  border-bottom-color: var(--clr-border);
+  color: var(--clr-text);
+}
+body.dark .planned-table tbody tr:hover td { background: #152840; }
+body.dark .planned-row-past td { color: var(--clr-text-muted); }
+body.dark .planned-empty { color: var(--clr-text-muted); }
+
+body.dark .planned-form-error {
+  background: #2d0f14;
+  border-left-color: #e74c3c;
+  color: #ff8090;
+}
+
+body.dark .btn-delete-planned { color: #ff7070; }
+body.dark .btn-delete-planned:hover {
+  background: #2d0f14;
+  border-color: #e74c3c;
+}
+
+/* Changes search input */
+body.dark .changes-search-input,
+body.dark .hdmx-changes-search {
+  background: #0d1e30;
+  color: var(--clr-text);
+  border-color: var(--clr-border);
+}
+
+/* Go button in sidebar search row */
+body.dark #productSearchBtn {
+  background: #162d46;
+  color: var(--clr-text);
+  border: 1px solid var(--clr-border);
+}
+body.dark #productSearchBtn:hover {
+  background: #1e3d5e;
+}
+
+/* Inline changes border separators */
+body.dark .hdmx-inline-changes-section { border-top-color: var(--clr-hdmx); }
+body.dark .hdbi-inline-changes-section { border-top-color: var(--clr-hdbi); }
+
+/* ── Comprehensive catch-all for remaining white areas ─────────────── */
+
+/* Main content area explicit background */
+body.dark .main { background: var(--clr-bg); }
+body.dark .machine-grid { background: var(--clr-bg); }
+
+/* Force dark background on section-cards (the wrapper around tool cards) */
+body.dark .section-cards { background: #0d1826 !important; }
+
+/* Force dark background on stats-card (overrides the hardcoded #ffffff) */
+body.dark .stats-card { background: #0d1e30 !important; border-color: var(--clr-border) !important; }
+
+/* Force dark background on ppv inline changes panel */
+body.dark .ppv-inline-changes-panel { background: #0d1e30 !important; border-color: var(--clr-border) !important; }
+
+/* HDBI layout table: ensure td and table background are dark */
+body.dark .hdbi-layout-table { background: transparent; }
+body.dark .hdbi-layout-table tbody tr td { background: transparent; }
+
+/* Stats product table: fix row borders and set explicit backgrounds */
+body.dark .stats-product-table th,
+body.dark .stats-product-table td {
+  border-bottom-color: var(--clr-border) !important;
+}
+body.dark .stats-product-table tbody tr td {
+  background: transparent;
+}
+
+/* Detail cell table: fix row borders and th background */
+body.dark .detail-cell-table th { background: #0d2240 !important; border-color: var(--clr-border); }
+body.dark .detail-cell-table td { border-bottom-color: var(--clr-border) !important; color: var(--clr-text); }
+
+/* Changes table rows in dark mode — ensure td cells have correct dark background */
+body.dark .changes-table tbody tr td { background: transparent; }
+body.dark .changes-table thead tr th { background: var(--clr-bg) !important; border-color: var(--clr-border) !important; }
+
+/* Ensure planned table td rows are dark */
+body.dark .planned-table tbody tr td { background: transparent; }
+
+/* Explicit ppv-changes-search (also has changes-search-input, but for safety) */
+body.dark .ppv-changes-search {
+  background: #0d1e30;
+  color: var(--clr-text);
+  border-color: var(--clr-border);
+}
+
+/* Stats section inner containers */
+body.dark .stats-grid { background: transparent; }
+body.dark .stats-product-section { background: transparent; }
+body.dark .stats-product-table-wrapper { background: transparent; }
+body.dark .stats-kpi-row { background: transparent; }
+
+/* Planned table wrapper */
+body.dark .planned-table-wrap { background: var(--clr-surface); }
+
+/* Changes body in modal */
+body.dark .changes-body { background: transparent; }
+
+/* Ensure all forms inside dark modals / panels have dark inputs */
+body.dark select,
+body.dark input[type="text"],
+body.dark input[type="date"] {
+  color-scheme: dark;
+}
+
