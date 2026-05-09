@@ -5,12 +5,14 @@ require('dotenv').config();
 process.on('uncaughtException',  err => console.error('[UNCAUGHT]', err));
 process.on('unhandledRejection', err => console.error('[UNHANDLED]', err));
 
-const express = require('express');
-const cors    = require('cors');
-const path    = require('path');
-const fs      = require('fs');
-const sql     = require('mssql');
-const zlib    = require('zlib');
+const express    = require('express');
+const cors       = require('cors');
+const path       = require('path');
+const fs         = require('fs');
+const sql        = require('mssql');
+const zlib       = require('zlib');
+const nodemailer = require('nodemailer');
+const cron       = require('node-cron');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -206,6 +208,8 @@ app.get('/api/filters', (req2, res) => {
       const w = currentWW - i;
       if (w > 0) weeks.push(`${year}${String(w).padStart(2, '0')}`);
     }
+    // Include only the immediately next WW so forecast slots are selectable.
+    weeks.push(`${year}${String(currentWW + 1).padStart(2, '0')}`);
 
     // Intel calendar: Su=0, Mo=1, Tu=2, We=3, Th=4, Fr=5, Sa=6
     const days = ['0', '1', '2', '3', '4', '5', '6'];
@@ -226,6 +230,58 @@ app.get('/api/default-period', async (req2, res) => {
     res.json(period);
   } catch (err) {
     console.error('[/api/default-period]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/forecast-slots
+// Returns today's WW/day/date plus all future slots:
+//   • remaining days of the current WW after today (e.g. WW19.6 when today is WW19.5)
+//   • all 7 days (Su–Sa) of the next WW
+app.get('/api/forecast-slots', (req2, res) => {
+  try {
+    const calendarPath = path.join(__dirname, 'Intel Calendar.csv');
+    const csv = fs.readFileSync(calendarPath, 'utf8');
+    const todayPeriod  = getDefaultPeriodFromCalendar();
+    const todayDateStr = new Date().toISOString().slice(0, 10);
+    const currentWW    = Number(String(todayPeriod.ww).slice(-2));
+    const nextWW       = currentWW + 1;
+    const currentWWStr = String(todayPeriod.ww);
+    const nextWWStr    = `${String(todayPeriod.ww).slice(0, 4)}${String(nextWW).padStart(2, '0')}`;
+
+    const slots = [];
+    const cursor = new Date();
+    cursor.setDate(cursor.getDate() + 1); // start from tomorrow
+
+    // Collect remaining current-WW days + all next-WW days (up to 28 days look-ahead)
+    let nextWWCount = 0;
+    for (let safety = 0; safety < 28; safety++) {
+      const ww = parseCalendarWeekForDate(cursor, csv);
+      if (ww === currentWW) {
+        // Remaining day(s) in the current WW after today
+        slots.push({
+          ww  : currentWWStr,
+          day : String(cursor.getDay()),
+          date: cursor.toISOString().slice(0, 10),
+        });
+      } else if (ww === nextWW) {
+        slots.push({
+          ww  : nextWWStr,
+          day : String(cursor.getDay()),
+          date: cursor.toISOString().slice(0, 10),
+        });
+        nextWWCount++;
+        if (nextWWCount >= 7) break; // collected the full next WW
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    res.json({
+      today: { ww: todayPeriod.ww, day: todayPeriod.day, date: todayDateStr },
+      slots,
+    });
+  } catch (err) {
+    console.error('[/api/forecast-slots]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -418,6 +474,13 @@ app.get('/api/export', async (req2, res) => {
 const changesResultCache = new Map();
 const CHANGES_CACHE_TTL  = 30 * 60 * 1000; // 30 minutes
 
+// In-flight deduplication maps:
+//   pendingPeriodFetches — one Promise per (cacheKey) period fetch
+//   pendingChangesCalc  — one Promise per (changeCacheKey) /api/changes computation
+// This prevents N simultaneous panel requests from each firing their own DB queries.
+const pendingPeriodFetches = new Map();
+const pendingChangesCalc   = new Map();
+
 // Compute up to `n` most-recent business-day periods going back from today.
 // Uses Intel Calendar.csv so no DB round-trip is needed to find WW numbers.
 function recentBusinessPeriods(n) {
@@ -445,31 +508,56 @@ function recentBusinessPeriods(n) {
 
 // Fetch allocation data for one (ww, day) period.
 // Re-uses queryCache so warm-up data is never fetched twice.
-async function fetchPeriodMap(p, tCol, cCol, pCol, wCol, dCol, ww, day) {
+// Uses pendingPeriodFetches to deduplicate concurrent requests for the same period,
+// so multiple simultaneous callers share a single DB query instead of each launching one.
+function fetchPeriodMap(p, tCol, cCol, pCol, wCol, dCol, ww, day) {
   const cacheKey = `alloc|${ww}|${day}`;
-  let rows = getCached(cacheKey);
-  if (!rows) {
-    const r = p.request();
-    r.timeout = QUERY_TIMEOUT;
-    r.input('ww',  sql.NVarChar, String(ww));
-    r.input('day', sql.NVarChar, String(day));
-    const result = await r.query(
-      `SELECT ${tCol} AS MACHINE_NAME, ${cCol} AS CELL, ${pCol} AS PRODUCT
-       FROM ${DB_VIEW} WHERE ${wCol} = @ww AND ${dCol} = @day`
-    );
-    rows = result.recordset;
-    setCached(cacheKey, rows);
-    console.log(`[/api/changes] fetched ${rows.length} rows for ${cacheKey}`);
-  } else {
+
+  // Return immediately if already in queryCache
+  const cached = getCached(cacheKey);
+  if (cached) {
     console.log(`[/api/changes] cache hit for ${cacheKey}`);
+    const map = {};
+    for (const row of cached) {
+      const key = `${row.MACHINE_NAME}||${row.CELL}`;
+      map[key] = row.PRODUCT == null ? null : String(row.PRODUCT).trim();
+    }
+    return Promise.resolve(map);
   }
 
-  const map = {};
-  for (const row of rows) {
-    const key = `${row.MACHINE_NAME}||${row.CELL}`;
-    map[key] = row.PRODUCT == null ? null : String(row.PRODUCT).trim();
+  // Return the existing in-flight promise if one is already running
+  if (pendingPeriodFetches.has(cacheKey)) {
+    console.log(`[/api/changes] dedup in-flight fetch for ${cacheKey}`);
+    return pendingPeriodFetches.get(cacheKey);
   }
-  return map;
+
+  // Start a new fetch and register it so concurrent callers can share it
+  const promise = (async () => {
+    try {
+      const r = p.request();
+      r.timeout = 120000; // 120 s — each query gets its own slot
+      r.input('ww',  sql.NVarChar, String(ww));
+      r.input('day', sql.NVarChar, String(day));
+      const result = await r.query(
+        `SELECT ${tCol} AS MACHINE_NAME, ${cCol} AS CELL, ${pCol} AS PRODUCT
+         FROM ${DB_VIEW} WHERE ${wCol} = @ww AND ${dCol} = @day`
+      );
+      const rows = result.recordset;
+      setCached(cacheKey, rows);
+      console.log(`[/api/changes] fetched ${rows.length} rows for ${cacheKey}`);
+      const map = {};
+      for (const row of rows) {
+        const key = `${row.MACHINE_NAME}||${row.CELL}`;
+        map[key] = row.PRODUCT == null ? null : String(row.PRODUCT).trim();
+      }
+      return map;
+    } finally {
+      pendingPeriodFetches.delete(cacheKey);
+    }
+  })();
+
+  pendingPeriodFetches.set(cacheKey, promise);
+  return promise;
 }
 
 // GET /api/changes
@@ -491,6 +579,13 @@ app.get('/api/changes', async (req2, res) => {
       return res.json(cached.data);
     }
 
+    // If another request is already computing changes for this mapping, share its result
+    if (pendingChangesCalc.has(changeCacheKey)) {
+      console.log('[/api/changes] dedup in-flight changes computation');
+      const result = await pendingChangesCalc.get(changeCacheKey);
+      return res.json(result);
+    }
+
     // Compute the 3 most-recent business-day periods from the Intel Calendar
     const periods = recentBusinessPeriods(3);
     if (periods.length < 2) {
@@ -499,36 +594,47 @@ app.get('/api/changes', async (req2, res) => {
 
     const p = await getPool();
 
-    // Fetch each period's data, re-using queryCache where possible
-    const periodData = [];
-    for (const period of periods) {
-      const map = await fetchPeriodMap(p, tCol, cCol, pCol, wCol, dCol, period.ww, period.day);
-      periodData.push({ ww: period.ww, day: period.day, map });
-    }
+    const computePromise = (async () => {
+      try {
+        // Fetch all periods in parallel — cuts wall-time from sum(queries) to max(query)
+        // pendingPeriodFetches ensures each period is fetched only once even under parallel load
+        const maps = await Promise.all(
+          periods.map(period => fetchPeriodMap(p, tCol, cCol, pCol, wCol, dCol, period.ww, period.day))
+        );
+        const periodData = periods.map((period, i) => ({ ww: period.ww, day: period.day, map: maps[i] }));
 
-    // Diff consecutive periods (newest first)
-    const changes = [];
-    for (let i = 0; i < periodData.length - 1; i++) {
-      const newer = periodData[i];
-      const older = periodData[i + 1];
-      const allKeys = new Set([...Object.keys(newer.map), ...Object.keys(older.map)]);
-      for (const key of allKeys) {
-        const [machine, cell] = key.split('||');
-        const oldProd = Object.prototype.hasOwnProperty.call(older.map, key) ? older.map[key] : null;
-        const newProd = Object.prototype.hasOwnProperty.call(newer.map, key) ? newer.map[key] : null;
-        if (oldProd !== newProd) {
-          changes.push({
-            machine, cell,
-            oldProduct: oldProd, newProduct: newProd,
-            fromWW: older.ww, fromDay: older.day,
-            toWW  : newer.ww, toDay  : newer.day,
-          });
+        // Diff consecutive periods (newest first)
+        const changes = [];
+        for (let i = 0; i < periodData.length - 1; i++) {
+          const newer = periodData[i];
+          const older = periodData[i + 1];
+          const allKeys = new Set([...Object.keys(newer.map), ...Object.keys(older.map)]);
+          for (const key of allKeys) {
+            const [machine, cell] = key.split('||');
+            const oldProd = Object.prototype.hasOwnProperty.call(older.map, key) ? older.map[key] : null;
+            const newProd = Object.prototype.hasOwnProperty.call(newer.map, key) ? newer.map[key] : null;
+            if (oldProd !== newProd) {
+              changes.push({
+                machine, cell,
+                oldProduct: oldProd, newProduct: newProd,
+                fromWW: older.ww, fromDay: older.day,
+                toWW  : newer.ww, toDay  : newer.day,
+              });
+            }
+          }
         }
-      }
-    }
 
-    const result = { changes, periods: periodData.map(pd => ({ ww: pd.ww, day: pd.day })) };
-    changesResultCache.set(changeCacheKey, { data: result, ts: Date.now() });
+        const result = { changes, periods: periodData.map(pd => ({ ww: pd.ww, day: pd.day })) };
+        changesResultCache.set(changeCacheKey, { data: result, ts: Date.now() });
+        return result;
+      } finally {
+        pendingChangesCalc.delete(changeCacheKey);
+      }
+    })();
+
+    pendingChangesCalc.set(changeCacheKey, computePromise);
+
+    const result = await computePromise;
     res.json(result);
   } catch (err) {
     console.error('[/api/changes]', err.message);
@@ -610,7 +716,65 @@ app.delete('/api/planned-conversions/:id', (req2, res) => {
   }
 });
 
+// ─── Disabled Tools ───────────────────────────────────────────────────────────
+// Stored in disabled-tools.json in the project root (server-side, shared).
+const DISABLED_TOOLS_FILE = path.join(__dirname, 'disabled-tools.json');
+
+function readDisabledTools() {
+  try {
+    if (!fs.existsSync(DISABLED_TOOLS_FILE)) return [];
+    const parsed = JSON.parse(fs.readFileSync(DISABLED_TOOLS_FILE, 'utf8'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch { return []; }
+}
+function writeDisabledTools(list) {
+  fs.writeFileSync(DISABLED_TOOLS_FILE, JSON.stringify(list, null, 2), 'utf8');
+}
+
+// GET /api/disabled-tools
+app.get('/api/disabled-tools', (req2, res) => {
+  try {
+    res.json(readDisabledTools());
+  } catch (err) {
+    console.error('[/api/disabled-tools GET]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/disabled-tools  — body: { tools: ["id1","id2",...] }
+app.put('/api/disabled-tools', (req2, res) => {
+  try {
+    const { tools } = req2.body;
+    if (!Array.isArray(tools)) return res.status(400).json({ error: 'tools must be an array.' });
+    // Sanitise: only keep non-empty strings, max 256 chars each
+    const clean = tools
+      .filter(t => t && typeof t === 'string')
+      .map(t => t.trim().slice(0, 256))
+      .filter(Boolean);
+    writeDisabledTools(clean);
+    console.log(`[/api/disabled-tools] saved ${clean.length} disabled tools`);
+    res.json({ ok: true, count: clean.length });
+  } catch (err) {
+    console.error('[/api/disabled-tools PUT]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Fallback: serve SPA ─────────────────────────────────────────────────────
+// NOTE: /api/send-report-now is registered further down (after sendDailyReport is defined)
+// but Express evaluates routes in registration order, so we register a thin proxy here
+// to keep it above the wildcard.
+app.get('/api/send-report-now', async (req2, res) => {
+  try {
+    // sendDailyReport is hoisted as an async function declaration — safe to call here.
+    await sendDailyReport();
+    res.json({ ok: true, message: 'Report sent — check server logs for details.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('*', (req2, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -653,9 +817,8 @@ async function warmCache(reason = 'scheduled') {
       return;
     }
     const p = await getPool();
-    for (const period of periods) {
-      await warmOnePeriod(p, period.ww, period.day, reason);
-    }
+    // Warm all periods in parallel so startup completes faster
+    await Promise.all(periods.map(period => warmOnePeriod(p, period.ww, period.day, reason)));
   } catch (err) {
     console.error('[CacheWarm] Failed:', err.message);
     if (reason === 'startup') {
@@ -674,6 +837,271 @@ setInterval(() => warmCache('12h-refresh'), WARM_INTERVAL_MS);
 // Extra keep-alive: a lightweight heartbeat that prevents Node from exiting
 // when there are no active DB connections in the pool.
 setInterval(() => {}, 60 * 1000); // ping every 60s — no-op, just holds the event loop
+
+// ─── Daily 6 PM Email Report ─────────────────────────────────────────────────
+// Computes product-change diffs for the last 24 h and sends an HTML table email.
+
+const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+
+function buildChangesEmailHtml(changes, periods, reportDate) {
+  const dateStr = reportDate.toLocaleDateString('es-MX', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+
+  const periodLabels = periods.map(p => `WW${String(p.ww).slice(-2)} / ${DAY_NAMES[Number(p.day)] || p.day}`).join(' → ');
+
+  let rows = '';
+  if (!changes.length) {
+    rows = `<tr><td colspan="6" style="text-align:center;padding:16px;color:#6b7280;font-style:italic;">
+      Sin cambios de producto registrados en las últimas 24 horas.
+    </td></tr>`;
+  } else {
+    for (const c of changes) {
+      const fromLabel = `WW${String(c.fromWW).slice(-2)}/Día ${c.fromDay}`;
+      const toLabel   = `WW${String(c.toWW).slice(-2)}/Día ${c.toDay}`;
+      const oldColor  = c.oldProduct ? '#374151' : '#9ca3af';
+      const newColor  = c.newProduct ? '#0052cc' : '#9ca3af';
+      rows += `
+        <tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:8px 12px;font-weight:600;color:#111827;">${c.machine || '—'}</td>
+          <td style="padding:8px 12px;color:#374151;">${c.cell || '—'}</td>
+          <td style="padding:8px 12px;color:${oldColor};font-style:${c.oldProduct ? 'normal' : 'italic'};">${c.oldProduct || 'Empty'}</td>
+          <td style="padding:8px 12px;color:#6b7280;text-align:center;">→</td>
+          <td style="padding:8px 12px;color:${newColor};font-weight:600;font-style:${c.newProduct ? 'normal' : 'italic'};">${c.newProduct || 'Empty'}</td>
+          <td style="padding:8px 12px;color:#6b7280;font-size:12px;">${fromLabel} → ${toLabel}</td>
+        </tr>`;
+    }
+  }
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:32px 0;">
+    <tr><td align="center">
+      <table width="700" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.12);">
+
+        <!-- Header -->
+        <tr>
+          <td style="background:linear-gradient(135deg,#0052cc 0%,#0071C5 100%);padding:28px 32px;">
+            <p style="margin:0;font-size:13px;color:#bfdbfe;letter-spacing:1px;text-transform:uppercase;">Intel — CRVLE Operations Planning</p>
+            <h1 style="margin:8px 0 0;font-size:22px;color:#ffffff;font-weight:700;">
+              Reporte Diario de Cambios de Producto
+            </h1>
+            <p style="margin:6px 0 0;font-size:13px;color:#93c5fd;">${dateStr}</p>
+          </td>
+        </tr>
+
+        <!-- Greeting -->
+        <tr>
+          <td style="padding:28px 32px 12px;">
+            <p style="margin:0;font-size:15px;color:#1f2937;line-height:1.6;">
+              Estimado equipo de Ingeniería Industrial,
+            </p>
+            <p style="margin:12px 0 0;font-size:14px;color:#374151;line-height:1.6;">
+              A continuación se presenta el resumen de los cambios de producto registrados en las celdas del sistema
+              de asignación de herramientas durante las últimas 24 horas.
+              Por favor revisen los cambios y tomen las acciones correspondientes de ser necesario.
+            </p>
+            ${periods.length ? `<p style="margin:10px 0 0;font-size:12px;color:#6b7280;">Períodos comparados: <strong>${periodLabels}</strong></p>` : ''}
+          </td>
+        </tr>
+
+        <!-- Summary badge -->
+        <tr>
+          <td style="padding:8px 32px 20px;">
+            <span style="display:inline-block;background:${changes.length ? '#eff6ff' : '#f0fdf4'};
+              color:${changes.length ? '#1d4ed8' : '#15803d'};
+              border:1px solid ${changes.length ? '#bfdbfe' : '#bbf7d0'};
+              border-radius:20px;padding:4px 14px;font-size:13px;font-weight:700;">
+              ${changes.length} cambio${changes.length !== 1 ? 's' : ''} detectado${changes.length !== 1 ? 's' : ''}
+            </span>
+          </td>
+        </tr>
+
+        <!-- Table -->
+        <tr>
+          <td style="padding:0 32px 32px;">
+            <table width="100%" cellpadding="0" cellspacing="0"
+              style="border-collapse:collapse;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;font-size:13px;">
+              <thead>
+                <tr style="background:#0052cc;">
+                  <th style="padding:10px 12px;text-align:left;color:#fff;font-weight:700;white-space:nowrap;">Tool / Máquina</th>
+                  <th style="padding:10px 12px;text-align:left;color:#fff;font-weight:700;">Celda</th>
+                  <th style="padding:10px 12px;text-align:left;color:#fff;font-weight:700;">Producto Anterior</th>
+                  <th style="padding:10px 12px;text-align:center;color:#fff;font-weight:700;"></th>
+                  <th style="padding:10px 12px;text-align:left;color:#fff;font-weight:700;">Producto Nuevo</th>
+                  <th style="padding:10px 12px;text-align:left;color:#fff;font-weight:700;white-space:nowrap;">Período</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows}
+              </tbody>
+            </table>
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:18px 32px;">
+            <p style="margin:0;font-size:12px;color:#9ca3af;line-height:1.5;">
+              Este correo fue generado automáticamente por el <strong>Tool Allocation Dashboard</strong> — CRVLE Ops Planning.<br>
+              Por favor no responder directamente a este mensaje.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+async function sendDailyReport() {
+  const emailFrom     = process.env.EMAIL_FROM;
+  const emailTo       = process.env.EMAIL_TO;
+  const emailPassword = process.env.EMAIL_PASSWORD;
+  const smtpHost      = process.env.EMAIL_SMTP_HOST || 'smtp.office365.com';
+  const smtpPort      = parseInt(process.env.EMAIL_SMTP_PORT || '587', 10);
+
+  if (!emailFrom || !emailTo || !emailPassword) {
+    console.warn('[Email] Missing EMAIL_FROM, EMAIL_TO or EMAIL_PASSWORD in .env — skipping report.');
+    return;
+  }
+
+  try {
+    console.log('[Email] Building daily report...');
+
+    const tCol = safeCol(DEFAULT_COLS.toolCol);
+    const cCol = safeCol(DEFAULT_COLS.cellCol);
+    const pCol = safeCol(DEFAULT_COLS.productCol);
+    const wCol = safeCol(DEFAULT_COLS.wwCol);
+    const dCol = safeCol(DEFAULT_COLS.dayCol);
+
+    // ── Try changesResultCache first (populated by /api/changes — no extra DB call) ──
+    const changeCacheKey = `${tCol}|${cCol}|${pCol}|${wCol}|${dCol}`;
+    const cachedResult   = changesResultCache.get(changeCacheKey);
+
+    let changes, periods;
+
+    if (cachedResult && Date.now() - cachedResult.ts < CHANGES_CACHE_TTL) {
+      console.log('[Email] Using cached changes data.');
+      changes = cachedResult.data.changes;
+      periods = cachedResult.data.periods;
+    } else {
+      // ── Fall back: compute fresh using a dedicated connection with a 5-min timeout ──
+      // The shared pool enforces requestTimeout=60s at the driver level; per-request
+      // r.timeout is ignored by tedious. We open a separate connection with a longer
+      // timeout so slow queries don't fail.
+      console.log('[Email] Cache miss — fetching from DB with dedicated connection (5 min timeout)...');
+      periods = recentBusinessPeriods(2);
+      if (periods.length < 2) {
+        console.warn('[Email] Not enough periods to compute changes — skipping report.');
+        return;
+      }
+
+      const emailDbConfig = { ...dbConfig, requestTimeout: 300000, connectionTimeout: 60000, pool: { max: 2, min: 0, idleTimeoutMillis: 30000 } };
+      const emailPool = await new sql.ConnectionPool(emailDbConfig).connect();
+
+      const fetchEmailPeriodMap = async (ww, day) => {
+        const cacheKey = `alloc|${ww}|${day}`;
+        const cached = getCached(cacheKey);
+        if (cached) {
+          console.log(`[Email] Period ${cacheKey} served from cache.`);
+          const map = {};
+          for (const row of cached) {
+            const key = `${row.MACHINE_NAME || row[DEFAULT_COLS.toolCol]}||${row.CELL || row[DEFAULT_COLS.cellCol]}`;
+            const prod = row.PRODUCT ?? row[DEFAULT_COLS.productCol];
+            map[key] = prod == null ? null : String(prod).trim();
+          }
+          return map;
+        }
+        console.log(`[Email] Querying period ${cacheKey} from DB...`);
+        const r = emailPool.request();
+        r.input('ww',  sql.NVarChar, String(ww));
+        r.input('day', sql.NVarChar, String(day));
+        const result = await r.query(
+          `SELECT ${tCol} AS MACHINE_NAME, ${cCol} AS CELL, ${pCol} AS PRODUCT
+           FROM ${DB_VIEW} WHERE ${wCol} = @ww AND ${dCol} = @day`
+        );
+        setCached(cacheKey, result.recordset);
+        console.log(`[Email] Period ${cacheKey}: ${result.recordset.length} rows.`);
+        const map = {};
+        for (const row of result.recordset) {
+          const key = `${row.MACHINE_NAME}||${row.CELL}`;
+          map[key] = row.PRODUCT == null ? null : String(row.PRODUCT).trim();
+        }
+        return map;
+      };
+
+      try {
+        const maps = await Promise.all(periods.map(pd => fetchEmailPeriodMap(pd.ww, pd.day)));
+        const newer = maps[0];
+        const older  = maps[1];
+        const allKeys = new Set([...Object.keys(newer), ...Object.keys(older)]);
+        changes = [];
+        for (const key of allKeys) {
+          const [machine, cell] = key.split('||');
+          const oldProd = Object.prototype.hasOwnProperty.call(older, key) ? older[key] : null;
+          const newProd = Object.prototype.hasOwnProperty.call(newer, key) ? newer[key] : null;
+          if (oldProd !== newProd) {
+            changes.push({
+              machine, cell,
+              oldProduct: oldProd,
+              newProduct: newProd,
+              fromWW : periods[1].ww, fromDay: periods[1].day,
+              toWW   : periods[0].ww, toDay  : periods[0].day,
+            });
+          }
+        }
+      } finally {
+        try { await emailPool.close(); } catch (_) {}
+      }
+    }
+
+    // Sort: machines with actual product changes first, then alphabetically
+    changes.sort((a, b) => {
+      const aHas = Boolean(a.newProduct);
+      const bHas = Boolean(b.newProduct);
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      return (a.machine || '').localeCompare(b.machine || '');
+    });
+
+    const reportDate = new Date();
+    const html = buildChangesEmailHtml(changes, periods || [], reportDate);
+
+    const subject = `[Tool Allocation] Reporte de Cambios — ${reportDate.toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`;
+
+    const transporter = nodemailer.createTransport({
+      host   : smtpHost,
+      port   : smtpPort,
+      secure : false,
+      auth   : emailPassword ? { user: emailFrom, pass: emailPassword } : undefined,
+      tls    : { rejectUnauthorized: false, ciphers: 'SSLv3' },
+    });
+
+    await transporter.sendMail({
+      from   : `"CRVLE Tool Times System" <${emailFrom}>`,
+      to     : emailTo,
+      subject,
+      html,
+    });
+
+    console.log(`[Email] Daily report sent to ${emailTo} — ${changes.length} change(s) reported.`);
+  } catch (err) {
+    console.error('[Email] Failed to send daily report:', err.message);
+  }
+}
+
+// Schedule: every weekday at 18:10 (6:10 PM) Costa Rica time
+// Cron format: minute hour day-of-month month day-of-week
+cron.schedule('10 18 * * 1-5', () => {
+  console.log('[Email] Cron triggered — 6:10 PM weekday report');
+  sendDailyReport();
+}, { timezone: 'America/Costa_Rica' });
+
+console.log('[Email] Daily report scheduled for 18:10 Mon–Fri (America/Costa_Rica).');
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 app.listen(PORT, async () => {

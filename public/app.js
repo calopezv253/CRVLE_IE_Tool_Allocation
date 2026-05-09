@@ -63,6 +63,16 @@ const PRODUCT_CLASSES = [
 const productColorMap = {};
 let colorIdx = 0;
 const CLASS_CELLS = ['A101','A102','A201','A202','A301','A302','A401','A402','A501','A502'];
+
+// HDMX level groupings: each level = two cells that must share the same product.
+const HDMX_LEVELS = [
+  { label: 'L1', cells: ['A101', 'A102'] },
+  { label: 'L2', cells: ['A201', 'A202'] },
+  { label: 'L3', cells: ['A301', 'A302'] },
+  { label: 'L4', cells: ['A401', 'A402'] },
+  { label: 'L5', cells: ['A501', 'A502'] },
+];
+
 const PTC_CELLS = ['A101','A201','A301','A401','A501'];
 const SST_CELLS = [
   'A101','A201','A301','A401',
@@ -428,6 +438,12 @@ const changesBody     = document.getElementById('changesBody');
 const closeChangesBtn = document.getElementById('closeChangesBtn');
 const changesSearch   = document.getElementById('changesSearch');
 const changesExportBtn= document.getElementById('changesExportBtn');
+const disableToolsBtn  = document.getElementById('disableToolsBtn');
+const disableToolsModal= document.getElementById('disableToolsModal');
+const disableToolsList = document.getElementById('disableToolsList');
+const disableToolsSearch = document.getElementById('disableToolsSearch');
+const saveDisableToolsBtn  = document.getElementById('saveDisableToolsBtn');
+const closeDisableToolsBtn = document.getElementById('closeDisableToolsBtn');
 
 // ─── State ───────────────────────────────────────────────────────────────────
 let colMapping    = loadMapping();
@@ -436,6 +452,24 @@ let currentData   = [];   // raw rows from last /api/allocations call
 let baseDataCache = [];   // raw rows for active ww/day (single DB load)
 let baseDataKey   = '';   // cache key = "ww|day"
 let highlightSet  = new Set();  // tool+cell keys to highlight
+let disabledTools = new Set();  // tool IDs that are disabled (cells shown as Empty)
+
+// ─── Forecast state ───────────────────────────────────────────────────────────
+// forecastSlots: next 7 days returned by /api/forecast-slots [{ww, day, date}]
+// todayPeriod  : today's resolved period from the server {ww, day, date}
+let forecastSlots = [];
+let todayPeriod   = null;
+
+// Returns true when the given WW/day combination is a future (forecast) slot.
+function isForecastPeriod(ww, day) {
+  if (!todayPeriod || !ww || day === '' || day === undefined || day === null) return false;
+  const todayNum = Number(String(todayPeriod.ww).replace(/\D/g, ''));
+  const wwNum    = Number(String(ww).replace(/\D/g, ''));
+  if (!wwNum || !todayNum) return false;
+  if (wwNum > todayNum) return true;
+  if (wwNum === todayNum && Number(day) > Number(todayPeriod.day)) return true;
+  return false;
+}
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
 async function apiFetch(path) {
@@ -488,6 +522,154 @@ function getHdmxCoolant(machineOrTool) {
   return String(HDMX_COOLANT_BY_TOOL[digits] || '').toUpperCase();
 }
 
+// ─── Forecast helpers ─────────────────────────────────────────────────────────
+
+// Fetch forecast slots from the server and store in state.
+async function loadForecastSlots() {
+  try {
+    const { today, slots } = await apiFetch('/api/forecast-slots');
+    forecastSlots = slots || [];
+    todayPeriod   = today || null;
+
+    if (!forecastSlots.length) return;
+
+    // Ensure any forecast WW values that weren't returned by /api/filters
+    // are present in the selector (edge case: filters only goes +2 WW).
+    const existingVals = new Set([...filterWW.options].map(o => o.value));
+    const uniqueWWs    = [...new Set(forecastSlots.map(s => s.ww))];
+    for (const wwVal of uniqueWWs) {
+      if (!existingVals.has(wwVal)) {
+        const opt = document.createElement('option');
+        opt.value = wwVal;
+        opt.textContent = formatWWLabel(wwVal);
+        opt.dataset.forecast = 'true';
+        filterWW.appendChild(opt);
+      }
+    }
+
+    // Mark future WW options in the dataset (no visual indicator added)
+    const todayWwNum = Number(String(today.ww).replace(/\D/g, ''));
+    for (const opt of filterWW.options) {
+      if (!opt.value) continue;
+      const optWwNum = Number(String(opt.value).replace(/\D/g, ''));
+      if (optWwNum > todayWwNum && !opt.dataset.forecast) {
+        opt.dataset.forecast = 'true';
+      }
+    }
+
+    // Build a set of forecast day values for the current WW (remaining days after today)
+    const currentWwFutureDays = new Set(
+      forecastSlots
+        .filter(s => s.ww === today.ww)
+        .map(s => s.day)
+    );
+
+    // Mark day selector options that are future slots within the current WW (no visual indicator)
+    if (currentWwFutureDays.size > 0) {
+      for (const opt of filterDay.options) {
+        if (currentWwFutureDays.has(opt.value) && !opt.dataset.forecast) {
+          opt.dataset.forecast = 'true';
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[loadForecastSlots]', err.message);
+  }
+}
+
+// Build a synthetic (forecast) dataset for the given future WW/day.
+// Logic:
+//   1. Load today's actual allocation from the DB (cached after first load).
+//   2. Deep-copy those rows.
+//   3. For each day in the chain from tomorrow → targetDay, apply any planned
+//      conversions whose date matches that day.
+//   4. Stamp the resulting rows with the target WW/day and store in baseDataCache.
+async function buildForecastData(targetWw, targetDay) {
+  if (!todayPeriod) {
+    setStatus('⚠ Forecast: could not determine the current period.');
+    baseDataCache = []; machineGrid.innerHTML = ''; emptyState.style.display = '';
+    return false;
+  }
+
+  const targetSlotIdx = forecastSlots.findIndex(s => s.ww === targetWw && s.day === targetDay);
+  if (targetSlotIdx === -1) {
+    setStatus(`⚠ Forecast: slot WW${String(targetWw).slice(-2)}.${targetDay} not found.`);
+    baseDataCache = []; machineGrid.innerHTML = ''; emptyState.style.display = '';
+    return false;
+  }
+
+  const wwShort = String(targetWw).slice(-2);
+  showLoading(`Building forecast WW${wwShort}.${targetDay}…`);
+  setStatus(`<span class="spinner"></span> Building forecast WW${wwShort}.${targetDay}…`);
+  recordCount.textContent = '';
+
+  try {
+    // ── 1. Obtain today's base data ──────────────────────────────────────────
+    let todayData;
+    const todayKey = `${todayPeriod.ww}|${todayPeriod.day}`;
+    if (baseDataKey === todayKey && baseDataCache.length > 0) {
+      todayData = baseDataCache; // already in memory — reuse
+    } else {
+      const p = mappingParams();
+      p.set('ww',  todayPeriod.ww);
+      p.set('day', todayPeriod.day);
+      const { data } = await apiFetch(`/api/allocations?${p}`);
+      todayData = data;
+    }
+
+    // ── 2. Deep-copy rows so we never mutate the cached today's snapshot ─────
+    let forecastData = todayData.map(row => ({ ...row }));
+
+    // ── 3. Fetch planned conversions (silently skip on error) ────────────────
+    let planned = [];
+    try { planned = await apiFetch('/api/planned-conversions'); } catch (_) {}
+
+    // ── 4. Chain: apply each day's conversions in order ──────────────────────
+    const chain = forecastSlots.slice(0, targetSlotIdx + 1);
+    const tc = colMapping.toolCol;
+    const cc = colMapping.cellCol;
+    const pc = colMapping.productCol;
+    const wc = colMapping.wwCol;
+    const dc = colMapping.dayCol;
+
+    for (const slot of chain) {
+      const slotConversions = planned.filter(c => c.date === slot.date);
+      for (const conv of slotConversions) {
+        for (const row of forecastData) {
+          // Use machineMatchesToken so that DB names like "CR03DHHX1439" match
+          // form values like "1439", "CR4326", "HDBI 5082", etc.
+          if (machineMatchesToken(String(row[tc] || ''), conv.tool) &&
+              String(row[cc] || '').trim().toUpperCase() === String(conv.cell || '').trim().toUpperCase()) {
+            row[pc] = conv.newProduct;
+          }
+        }
+      }
+    }
+
+    // ── 5. Stamp all rows with the target WW/day ──────────────────────────────
+    for (const row of forecastData) {
+      if (wc) row[wc] = targetWw;
+      if (dc) row[dc] = targetDay;
+    }
+
+    // Persist conversions applied in this forecast for status display
+    const totalConversionsApplied = chain.reduce((acc, slot) =>
+      acc + planned.filter(c => c.date === slot.date).length, 0);
+
+    baseDataCache = forecastData;
+    baseDataKey   = `${targetWw}|${targetDay}`;
+    setStatus('');
+    return true;
+  } catch (err) {
+    setStatus(`⚠ Forecast error: ${err.message}`);
+    baseDataCache = []; baseDataKey = '';
+    currentData = []; machineGrid.innerHTML = ''; emptyState.style.display = '';
+    return false;
+  } finally {
+    hideLoading();
+  }
+}
+
 async function ensureBaseDataLoaded(forceReload = false) {
   const ww = filterWW.value;
   const day = filterDay.value;
@@ -498,6 +680,13 @@ async function ensureBaseDataLoaded(forceReload = false) {
     machineGrid.innerHTML = '';
     emptyState.style.display = '';
     return false;
+  }
+
+  // ─── Forecast mode: future WW/day — synthesize from today's data ─────────
+  if (ww && day !== '' && day !== undefined && day !== null && isForecastPeriod(ww, day)) {
+    const key = activePeriodKey();
+    if (!forceReload && baseDataKey === key && baseDataCache.length > 0) return true;
+    return await buildForecastData(ww, day);
   }
 
   const key = activePeriodKey();
@@ -535,6 +724,123 @@ async function ensureBaseDataLoaded(forceReload = false) {
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
+// ─── Disabled Tools helpers ──────────────────────────────────────────────────
+async function loadDisabledTools() {
+  try {
+    const list = await apiFetch('/api/disabled-tools');
+    disabledTools = new Set(Array.isArray(list) ? list : []);
+  } catch (e) {
+    console.warn('[disabledTools] could not load:', e.message);
+    disabledTools = new Set();
+  }
+}
+
+async function saveDisabledTools(toolsSet) {
+  await fetch('/api/disabled-tools', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tools: [...toolsSet] }),
+  });
+}
+
+/**
+ * Returns true if the given toolId (or a DB machine name matching it) is disabled.
+ * Uses machineMatchesToken for consistent name-matching (handles BDC 4944 ↔ CR03HBDC24944, etc.)
+ */
+function isToolDisabled(toolId) {
+  if (!toolId || !disabledTools.size) return false;
+  for (const d of disabledTools) {
+    if (machineMatchesToken(toolId, d)) return true;
+  }
+  return false;
+}
+
+function openDisableToolsModal() {
+  // Collect all known tools from AREA_MAP in canonical order
+  const groups = [
+    { label: 'HDBI', tools: [...(AREA_MAP.HDBI?.tools?.HDBI || []), ...(AREA_MAP.HDBI?.tools?.BDC || [])] },
+    { label: 'HDMX', tools: AREA_MAP.HDMX?.tools?.[''] || [] },
+    { label: 'PPV — HST', tools: AREA_MAP.PPV?.tools?.HST || [] },
+    { label: 'PPV — SST', tools: AREA_MAP.PPV?.tools?.SST || [] },
+    { label: 'PPV — PTC', tools: AREA_MAP.PPV?.tools?.PTC || [] },
+  ];
+
+  // Snapshot of currently disabled tools (mutable draft inside modal)
+  const draft = new Set(disabledTools);
+
+  disableToolsList.innerHTML = '';
+
+  for (const grp of groups) {
+    if (!grp.tools.length) continue;
+
+    const section = document.createElement('div');
+    section.className = 'dt-group';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'dt-group-header';
+    hdr.innerHTML = `<span>${grp.label}</span>`;
+    section.appendChild(hdr);
+
+    for (const toolId of grp.tools) {
+      const displayName = formatMachineDisplayName(toolId);
+      const row = document.createElement('label');
+      row.className = 'dt-row';
+      row.dataset.tool = toolId;
+      row.dataset.search = normalise(displayName + ' ' + toolId);
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'dt-checkbox';
+      cb.checked = draft.has(toolId);
+      cb.addEventListener('change', () => {
+        if (cb.checked) draft.add(toolId);
+        else draft.delete(toolId);
+      });
+
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = displayName;
+
+      const badge = document.createElement('span');
+      badge.className = 'dt-badge-disabled';
+      badge.textContent = 'DISABLED';
+
+      row.appendChild(cb);
+      row.appendChild(nameSpan);
+      row.appendChild(badge);
+      section.appendChild(row);
+    }
+
+    disableToolsList.appendChild(section);
+  }
+
+  // Search filter
+  disableToolsSearch.value = '';
+  disableToolsSearch.oninput = () => {
+    const q = normalise(disableToolsSearch.value);
+    disableToolsList.querySelectorAll('.dt-row').forEach(row => {
+      row.style.display = (!q || row.dataset.search.includes(q)) ? '' : 'none';
+    });
+    // Hide group headers when all their rows are hidden
+    disableToolsList.querySelectorAll('.dt-group').forEach(grp => {
+      const anyVisible = [...grp.querySelectorAll('.dt-row')].some(r => r.style.display !== 'none');
+      grp.style.display = anyVisible ? '' : 'none';
+    });
+  };
+
+  // Save button
+  saveDisableToolsBtn.onclick = async () => {
+    disabledTools = new Set(draft);
+    await saveDisabledTools(disabledTools);
+    disableToolsModal.style.display = 'none';
+    // Re-render grid with updated disabled state
+    await fetchAndRender();
+  };
+
+  closeDisableToolsBtn.onclick = () => { disableToolsModal.style.display = 'none'; };
+
+  disableToolsModal.style.display = '';
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   showLoading('Loading data');
   buildMappingGrid();
@@ -559,6 +865,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   await loadFilters();
+  // Load forecast slots so future WW/day combos are recognised and marked
+  // in the WW selector with a "→" indicator.
+  await loadForecastSlots();
+  // Load disabled tools list from server
+  await loadDisabledTools();
   // On every page load/refresh, fetch a fresh snapshot from SQL once.
   // All subsequent filtering uses the in-memory cache for this session.
   await ensureBaseDataLoaded(true);
@@ -807,23 +1118,25 @@ function populateToolList(area, sub) {
     }
 
     for (const toolId of toolGroups) addToolEntry(toolId, area, sub);
-    toolEntries.sort((a, b) => a.label.localeCompare(b.label));
+
+    if (area === 'PPV' && !sub) {
+      // PPV all-subs: order HST → SST → PTC, then alphabetically within each group
+      const PPV_SUB_ORDER = { HST: 0, SST: 1, PTC: 2 };
+      toolEntries.sort((a, b) => {
+        const ai = PPV_SUB_ORDER[a.group] ?? 99;
+        const bi = PPV_SUB_ORDER[b.group] ?? 99;
+        if (ai !== bi) return ai - bi;
+        return a.label.localeCompare(b.label);
+      });
+    } else {
+      toolEntries.sort((a, b) => a.label.localeCompare(b.label));
+    }
   }
 
   if (!toolEntries.length) {
     toolCheckList.innerHTML = '<span class="no-tools">No tools defined</span>';
     return;
   }
-
-  const emptyLbl = document.createElement('label');
-  const emptyCb  = document.createElement('input');
-  emptyCb.type = 'checkbox';
-  emptyCb.id = 'toolToggleEmpty';
-  emptyCb.checked = true;
-  emptyLbl.className = 'tool-toggle-empty';
-  emptyLbl.appendChild(emptyCb);
-  emptyLbl.append(' Tools Empty');
-  toolCheckList.appendChild(emptyLbl);
 
   const allLbl = document.createElement('label');
   const allCb  = document.createElement('input');
@@ -835,13 +1148,37 @@ function populateToolList(area, sub) {
   allLbl.append(' Select / Deselect all');
   toolCheckList.appendChild(allLbl);
 
+  const emptyLbl = document.createElement('label');
+  const emptyCb  = document.createElement('input');
+  emptyCb.type = 'checkbox';
+  emptyCb.id = 'toolToggleEmpty';
+  emptyCb.checked = true;
+  emptyLbl.className = 'tool-toggle-empty';
+  emptyLbl.appendChild(emptyCb);
+  emptyLbl.append(' Tools Empty');
+  toolCheckList.appendChild(emptyLbl);
+
+  // Pre-build PPV sub-area token sets for display label resolution.
+  // entry.group can be 'OTHER' when no sub-area filter is active, so we
+  // look up the actual sub directly from AREA_MAP instead.
+  const ppvHstTokens = new Set((AREA_MAP.PPV?.tools?.HST || []).map(t => normalise(formatToolTokenForFilter(t, 'PPV'))));
+  const ppvPtcTokens = new Set((AREA_MAP.PPV?.tools?.PTC || []).map(t => normalise(formatToolTokenForFilter(t, 'PPV'))));
+
   for (const entry of toolEntries) {
     const lbl = document.createElement('label');
     const cb  = document.createElement('input');
     cb.type = 'checkbox'; cb.value = entry.value; cb.checked = true;
     cb.dataset.toolItem = '1';
     lbl.appendChild(cb);
-    lbl.append(` ${entry.label}`);
+    let displayLabel = entry.label;
+    if (area === 'HDMX' && entry.label.startsWith('HDMX')) {
+      displayLabel = entry.label.slice(4);
+    } else if (area === 'PPV' && entry.label.startsWith('CR')) {
+      const normVal = normalise(entry.value);
+      if (ppvHstTokens.has(normVal))      displayLabel = `HST ${entry.label.slice(2)}`;
+      else if (ppvPtcTokens.has(normVal)) displayLabel = `PTC ${entry.label.slice(2)}`;
+    }
+    lbl.append(` ${displayLabel}`);
     toolCheckList.appendChild(lbl);
 
     cb.addEventListener('change', syncToolToggleAllState);
@@ -850,8 +1187,13 @@ function populateToolList(area, sub) {
   allCb.addEventListener('change', () => {
     const items = toolCheckList.querySelectorAll('input[type=checkbox][data-tool-item="1"]');
     for (const cb of items) cb.checked = allCb.checked;
+    const emptyCbEl = document.getElementById('toolToggleEmpty');
+    if (emptyCbEl) emptyCbEl.checked = allCb.checked;
     syncToolToggleAllState();
   });
+
+  const emptyCb2 = document.getElementById('toolToggleEmpty');
+  if (emptyCb2) emptyCb2.addEventListener('change', syncToolToggleAllState);
 
   syncToolToggleAllState();
 }
@@ -869,6 +1211,7 @@ function includeToolsEmpty() {
 function filterOutEmptyOnlyTools(data) {
   const tc = colMapping.toolCol;
   const pc = colMapping.productCol;
+  const cc = colMapping.cellCol;
 
   const rowsByTool = new Map();
   for (const row of data) {
@@ -881,7 +1224,29 @@ function filterOutEmptyOnlyTools(data) {
   const toolsWithProducts = new Set();
   for (const [toolId, rows] of rowsByTool.entries()) {
     const loc = resolveArea(toolId);
+
+    // For HDBI tools with a defined 2D layout, a cell only counts as occupied
+    // if its cell ID actually matches a position in the layout. Otherwise the
+    // card renders that cell as "Empty" regardless of the raw product value.
+    let expectedCells = null;
+    if (loc.area === 'HDBI') {
+      const layoutKey = getHdbiLayoutKey(toolId);
+      const layout = HDBI_LAYOUTS[layoutKey];
+      if (layout) {
+        expectedCells = new Set();
+        for (const col of layout.columns) {
+          for (const rowId of layout.rows) {
+            expectedCells.add((col ? `${col}${rowId}` : rowId).toUpperCase());
+          }
+        }
+      }
+    }
+
     const hasAssignedProduct = rows.some((row) => {
+      if (expectedCells) {
+        const cellId = String(row[cc] || '').trim().toUpperCase();
+        if (!expectedCells.has(cellId)) return false;
+      }
       const product = normalizeProductForStats(row[pc], loc.area, toolId);
       return !isEmptyProductForStats(product);
     });
@@ -904,15 +1269,18 @@ function syncToolToggleAllState() {
   if (!allCb) return;
 
   const items = [...toolCheckList.querySelectorAll('input[type=checkbox][data-tool-item="1"]')];
-  if (!items.length) {
+  const emptyCbEl = document.getElementById('toolToggleEmpty');
+  const allCheckboxes = emptyCbEl ? [...items, emptyCbEl] : items;
+
+  if (!allCheckboxes.length) {
     allCb.checked = false;
     allCb.indeterminate = false;
     return;
   }
 
-  const checked = items.filter(cb => cb.checked).length;
-  allCb.checked = checked === items.length;
-  allCb.indeterminate = checked > 0 && checked < items.length;
+  const checked = allCheckboxes.filter(cb => cb.checked).length;
+  allCb.checked = checked === allCheckboxes.length;
+  allCb.indeterminate = checked > 0 && checked < allCheckboxes.length;
 }
 
 // ─── Apply Filters ────────────────────────────────────────────────────────────
@@ -963,14 +1331,17 @@ async function fetchAndRender() {
     area === 'HDMX' ? coolantQuery : ''
   );
   recordCount.textContent = `${visibleData.length} rows`;
+  const inForecast = isForecastPeriod(filterWW.value, filterDay.value);
   if (productFilterResult.filtered) {
     setStatus(visibleData.length
       ? `Showing tools with product "${productQuery}" (${productFilterResult.matchCount} matching cell(s)).`
       : `No tools found with product "${productQuery}" for the selected filters.`);
-  } else {
-    setStatus(visibleData.length
-      ? ''
-      : 'No data for the selected filters.');
+  } else if (!visibleData.length) {
+    setStatus('No data for the selected filters.');
+  } else if (!inForecast) {
+    // Only clear status for normal (non-forecast) views; forecast status was
+    // already set by buildForecastData and should remain visible.
+    setStatus('');
   }
 }
 
@@ -1387,7 +1758,6 @@ async function renderHdmxInlineChanges(container, appendMode = false) {
 
   root.innerHTML = `
     <h4>&#9719; Recent Allocation Changes &mdash; HDMX</h4>
-    <p class="hdmx-changes-subtitle">Changes detected across the last 3 recorded work periods (up to 2 days).</p>
     <div class="hdmx-changes-toolbar">
       <input type="text" class="filter-input changes-search-input hdmx-changes-search" placeholder="Filter by machine, cell or product…" />
     </div>
@@ -1465,8 +1835,7 @@ async function renderHdmxInlineChanges(container, appendMode = false) {
 // ─── HDBI inline recent-changes card ─────────────────────────────────────────
 async function renderHdbiSubInlineChanges(container, sub) {
   container.innerHTML = `
-    <h4>&#9719; Recent Allocation Changes &mdash; HDBI ${sub || ''}</h4>
-    <p class="hdmx-changes-subtitle">Changes detected across the last 3 recorded work periods (up to 2 days).</p>
+    <h4>&#9719; Recent Allocation Changes &mdash; HDBI${sub && sub !== 'HDBI' ? ' ' + sub : ''}</h4>
     <div class="hdmx-changes-toolbar">
       <input type="text" class="filter-input changes-search-input hdbi-sub-changes-search" placeholder="Filter by machine, cell or product…" />
     </div>
@@ -1553,7 +1922,6 @@ async function renderHdbiInlineChanges(container, appendMode = false) {
 
   root.innerHTML = `
     <h4>&#9719; Recent Allocation Changes &mdash; HDBI</h4>
-    <p class="hdmx-changes-subtitle">Changes detected across the last 3 recorded work periods (up to 2 days).</p>
     <div class="hdmx-changes-toolbar">
       <input type="text" class="filter-input changes-search-input hdmx-changes-search" placeholder="Filter by machine, cell or product…" />
     </div>
@@ -1630,7 +1998,6 @@ async function renderHdbiInlineChanges(container, appendMode = false) {
 async function renderPpvInlineChanges(container, sub) {
   container.innerHTML = `
     <h4>&#9719; Recent Allocation Changes &mdash; PPV ${sub || ''}</h4>
-    <p class="hdmx-changes-subtitle">Changes detected across the last 3 recorded work periods (up to 2 days).</p>
     <div class="hdmx-changes-toolbar">
       <input type="text" class="filter-input changes-search-input ppv-changes-search" placeholder="Filter by machine, cell or product…" />
     </div>
@@ -1908,7 +2275,19 @@ function buildSectionPlanFromData(byTool) {
     buckets[key].tools.push(machineName);
   }
 
-  // Sort tools inside each section alphabetically
+  // Sort tools: HDMX by numeric tool number, others alphabetically
+  for (const bucket of Object.values(buckets)) {
+    if (bucket.area === 'HDMX') {
+      bucket.tools.sort((a, b) => {
+        const numA = parseInt((String(a).match(/(\d{4,5})$/) || [])[1] || '0', 10);
+        const numB = parseInt((String(b).match(/(\d{4,5})$/) || [])[1] || '0', 10);
+        return numA - numB;
+      });
+    } else {
+      bucket.tools.sort();
+    }
+  }
+
   return canonicalOrder
     .map(s => buckets[`${s.area}||${s.sub}`])
     .filter(s => s && s.tools.length > 0);
@@ -2052,6 +2431,10 @@ function formatMachineDisplayName(machineName) {
 }
 
 function buildHdbiLayoutCard(toolId, rows, area, sub, layoutKey = '') {
+  // When a tool is disabled, treat all cells as Empty
+  const toolDisabled = isToolDisabled(toolId);
+  if (toolDisabled) rows = [];
+
   const card = document.createElement('div');
   card.className = `machine-card area-${area || 'HDBI'}`;
   card.dataset.tool = toolId;
@@ -2064,6 +2447,12 @@ function buildHdbiLayoutCard(toolId, rows, area, sub, layoutKey = '') {
   titleSpan.className = 'machine-card-title-center';
   titleSpan.textContent = formatMachineDisplayName(toolId);
   header.appendChild(titleSpan);
+  if (toolDisabled) {
+    const badge = document.createElement('span');
+    badge.className = 'tool-disabled-badge';
+    badge.textContent = 'DISABLED';
+    header.appendChild(badge);
+  }
   card.appendChild(header);
 
   // 2D Layout Table
@@ -2138,6 +2527,10 @@ function buildHdbiLayoutCard(toolId, rows, area, sub, layoutKey = '') {
 }
 
 function buildMachineCard(toolId, rows, area, sub) {
+  // When a tool is disabled, treat all cells as Empty
+  const toolDisabled = isToolDisabled(toolId);
+  if (toolDisabled) rows = [];
+
   // Use 2D layout for HDBI/BDC machines
   const hdbiLayoutKey = getHdbiLayoutKey(toolId);
   if (hdbiLayoutKey) {
@@ -2177,8 +2570,20 @@ function buildMachineCard(toolId, rows, area, sub) {
 
     header.appendChild(leftBadge);
     header.appendChild(titleSpan);
+    if (toolDisabled) {
+      const badge = document.createElement('span');
+      badge.className = 'tool-disabled-badge';
+      badge.textContent = 'DISABLED';
+      header.appendChild(badge);
+    }
   } else {
     header.innerHTML = `<span class="machine-card-title-center">${formatMachineDisplayName(toolId)}</span>`;
+    if (toolDisabled) {
+      const badge = document.createElement('span');
+      badge.className = 'tool-disabled-badge';
+      badge.textContent = 'DISABLED';
+      header.appendChild(badge);
+    }
   }
   card.appendChild(header);
 
@@ -2651,6 +3056,7 @@ async function openChanges() {
 
 changesBtn.addEventListener('click', openChanges);
 closeChangesBtn.addEventListener('click', () => { changesModal.style.display = 'none'; });
+disableToolsBtn.addEventListener('click', openDisableToolsModal);
 changesModal.addEventListener('click', (e) => { if (e.target === changesModal) changesModal.style.display = 'none'; });
 
 changesSearch.addEventListener('input', () => { renderChangesBody(changesSearch.value); });
@@ -2703,13 +3109,41 @@ const pArea            = document.getElementById('pArea');
 const pSubField        = document.getElementById('pSubField');
 const pSub             = document.getElementById('pSub');
 const pTool            = document.getElementById('pTool');
-const pCell            = document.getElementById('pCell');
+const pCellList        = document.getElementById('pCellList');
 const pProduct         = document.getElementById('pProduct');
 const pDate            = document.getElementById('pDate');
 const pNotes           = document.getElementById('pNotes');
 const plannedFormError = document.getElementById('plannedFormError');
 const plannedTableBody = document.getElementById('plannedTableBody');
 const plannedExportBtn = document.getElementById('plannedExportBtn');
+
+// Populate the product datalist with unique products from baseDataCache for the given area/sub.
+function populatePlannedProductList(area, sub) {
+  const datalist = document.getElementById('pProductList');
+  if (!datalist) return;
+  datalist.innerHTML = '';
+
+  const tc = colMapping.toolCol;
+  const pc = colMapping.productCol;
+  if (!tc || !pc || !area) return;
+
+  const products = new Set();
+  for (const row of baseDataCache) {
+    const toolId = row[tc] || '';
+    const loc = resolveArea(toolId);
+    if (loc.area !== area) continue;
+    if (sub && loc.sub !== sub) continue;
+    const p = normalizeProductForCard(toolId, row[pc]);
+    if (p && p !== 'Empty' && !/^tlo$/i.test(p)) products.add(p);
+  }
+
+  const sorted = [...products].sort((a, b) => a.localeCompare(b));
+  for (const p of sorted) {
+    const opt = document.createElement('option');
+    opt.value = p;
+    datalist.appendChild(opt);
+  }
+}
 
 // All cells by tool – derived from the same logic used by the dashboard cards.
 function getCellsForPlannedTool(area, toolId) {
@@ -2722,7 +3156,7 @@ pArea.addEventListener('change', () => {
   const area = pArea.value;
 
   // Sub-area
-  pSub.innerHTML = '<option value="">Seleccionar…</option>';
+  pSub.innerHTML = '<option value="">Select…</option>';
   const areaData = AREA_MAP[area];
   if (area && areaData && areaData.subs && areaData.subs.length) {
     pSubField.style.display = '';
@@ -2737,11 +3171,13 @@ pArea.addEventListener('change', () => {
 
   populatePlannedTools(area, '');
   populatePlannedCells(area, '');
+  populatePlannedProductList(area, '');
 });
 
 pSub.addEventListener('change', () => {
   populatePlannedTools(pArea.value, pSub.value);
   populatePlannedCells(pArea.value, '');
+  populatePlannedProductList(pArea.value, pSub.value);
 });
 
 pTool.addEventListener('change', () => {
@@ -2751,11 +3187,11 @@ pTool.addEventListener('change', () => {
 function populatePlannedTools(area, sub) {
   pTool.innerHTML = '';
   if (!area) {
-    pTool.innerHTML = '<option value="">Seleccionar área primero</option>';
+    pTool.innerHTML = '<option value="">Select area first</option>';
     return;
   }
   const areaData = AREA_MAP[area];
-  if (!areaData) { pTool.innerHTML = '<option value="">Sin herramientas</option>'; return; }
+  if (!areaData) { pTool.innerHTML = '<option value="">No tools</option>'; return; }
 
   let tools = [];
   if (sub && areaData.tools[sub]) {
@@ -2767,13 +3203,13 @@ function populatePlannedTools(area, sub) {
   }
 
   if (!tools.length) {
-    pTool.innerHTML = '<option value="">Sin herramientas definidas</option>';
+    pTool.innerHTML = '<option value="">No tools defined</option>';
     return;
   }
 
   const placeholder = document.createElement('option');
   placeholder.value = '';
-  placeholder.textContent = 'Seleccionar tool…';
+  placeholder.textContent = 'Select tool…';
   pTool.appendChild(placeholder);
 
   for (const toolId of tools.sort((a, b) => a.localeCompare(b))) {
@@ -2785,44 +3221,101 @@ function populatePlannedTools(area, sub) {
 }
 
 function populatePlannedCells(area, toolId) {
-  pCell.innerHTML = '';
+  pCellList.innerHTML = '';
+  delete pCellList.dataset.mode;
+
   if (!toolId) {
-    pCell.innerHTML = '<option value="">Seleccionar tool primero</option>';
+    pCellList.innerHTML = '<span class="pcell-placeholder">Select tool first</span>';
     return;
   }
+
+  // ── HDMX: show level selectors (L1–L5) instead of individual cells ────────
+  if (String(area || '').toUpperCase() === 'HDMX') {
+    pCellList.dataset.mode = 'hdmx-levels';
+    renderCheckboxList(HDMX_LEVELS.map(l => ({
+      value: l.label,
+      label: l.label,
+    })));
+    return;
+  }
+
   const cells = getCellsForPlannedTool(area, toolId);
   if (!cells) {
-    // No fixed layout – allow free-text entry
-    pCell.innerHTML = '<option value="">Escribir celda manualmente</option>';
-    // Replace select with input temporarily
+    // No fixed layout — show a free-text input inside the list box
     const input = document.createElement('input');
     input.type = 'text';
-    input.id = 'pCell';
-    input.placeholder = 'Ej. LA101';
+    input.id = 'pCellFree';
+    input.className = 'pcell-free-input';
+    input.placeholder = 'e.g. LA101';
     input.maxLength = 32;
-    input.required = true;
-    pCell.parentNode.replaceChild(input, pCell);
+    pCellList.appendChild(input);
     return;
   }
-  // Restore select if it was replaced by input
-  if (pCell.tagName === 'INPUT') {
-    const sel = document.createElement('select');
-    sel.id = 'pCell';
-    sel.required = true;
-    pCell.parentNode.replaceChild(sel, pCell);
+
+  renderCheckboxList(cells.map(c => ({ value: c, label: c })));
+}
+
+// Renders the "Select All" toggle + one checkbox per item into pCellList.
+// items: Array<{ value: string, label: string }>
+function renderCheckboxList(items) {
+  // ── Select All toggle row ─────────────────────────────────────────────────
+  const toggleRow = document.createElement('label');
+  toggleRow.className = 'pcell-toggle-row';
+  const toggleCb = document.createElement('input');
+  toggleCb.type = 'checkbox';
+  toggleCb.id = 'pCellSelectAll';
+  toggleRow.appendChild(toggleCb);
+  toggleRow.appendChild(document.createTextNode('Select All'));
+  pCellList.appendChild(toggleRow);
+
+  function syncToggle() {
+    const all     = pCellList.querySelectorAll('.pcell-item input[type="checkbox"]');
+    const checked = pCellList.querySelectorAll('.pcell-item input[type="checkbox"]:checked');
+    toggleCb.checked       = all.length > 0 && checked.length === all.length;
+    toggleCb.indeterminate = checked.length > 0 && checked.length < all.length;
   }
-  const freshCell = document.getElementById('pCell');
-  freshCell.innerHTML = '';
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = 'Seleccionar celda…';
-  freshCell.appendChild(placeholder);
-  for (const c of cells) {
-    const opt = document.createElement('option');
-    opt.value = c;
-    opt.textContent = c;
-    freshCell.appendChild(opt);
+
+  toggleCb.addEventListener('change', () => {
+    pCellList.querySelectorAll('.pcell-item input[type="checkbox"]').forEach(cb => {
+      cb.checked = toggleCb.checked;
+    });
+  });
+
+  // ── One checkbox per item ─────────────────────────────────────────────────
+  for (const item of items) {
+    const lbl = document.createElement('label');
+    lbl.className = 'pcell-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = item.value;
+    cb.addEventListener('change', syncToggle);
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(item.label));
+    pCellList.appendChild(lbl);
   }
+}
+
+// Helper: returns selected cell values from pCellList.
+// For HDMX level mode, each level is expanded to its constituent cells.
+function getSelectedCells() {
+  // Free-text mode
+  const free = pCellList.querySelector('.pcell-free-input');
+  if (free) return free.value.trim() ? [free.value.trim()] : [];
+
+  const checked = [...pCellList.querySelectorAll('.pcell-item input[type="checkbox"]:checked')]
+    .map(cb => cb.value);
+
+  // HDMX level mode: expand L1 → [A101, A102], etc.
+  if (pCellList.dataset.mode === 'hdmx-levels') {
+    const expanded = [];
+    for (const levelLabel of checked) {
+      const level = HDMX_LEVELS.find(l => l.label === levelLabel);
+      if (level) expanded.push(...level.cells);
+    }
+    return expanded;
+  }
+
+  return checked;
 }
 
 function showPlannedFormError(msg) {
@@ -2831,7 +3324,7 @@ function showPlannedFormError(msg) {
 }
 
 async function loadPlannedConversions() {
-  plannedTableBody.innerHTML = '<tr><td colspan="8" class="planned-empty">Cargando…</td></tr>';
+  plannedTableBody.innerHTML = '<tr><td colspan="8" class="planned-empty">Loading…</td></tr>';
   try {
     const list = await apiFetch('/api/planned-conversions');
     renderPlannedTable(list);
@@ -2842,7 +3335,7 @@ async function loadPlannedConversions() {
 
 function renderPlannedTable(list) {
   if (!list.length) {
-    plannedTableBody.innerHTML = '<tr><td colspan="8" class="planned-empty">No hay conversiones planeadas aún.</td></tr>';
+    plannedTableBody.innerHTML = '<tr><td colspan="8" class="planned-empty">No planned conversions yet.</td></tr>';
     return;
   }
 
@@ -2852,7 +3345,7 @@ function renderPlannedTable(list) {
   let html = '';
   for (const entry of sorted) {
     const created = entry.createdAt
-      ? new Date(entry.createdAt).toLocaleDateString('es-MX', { year: 'numeric', month: 'short', day: 'numeric' })
+      ? new Date(entry.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
       : '—';
     const isPast = entry.date && entry.date < new Date().toISOString().slice(0, 10);
     html += `<tr class="${isPast ? 'planned-row-past' : ''}">
@@ -2860,10 +3353,10 @@ function renderPlannedTable(list) {
       <td>${escHtml(entry.tool || '—')}</td>
       <td>${escHtml(entry.cell || '—')}</td>
       <td class="planned-product">${escHtml(entry.newProduct || '—')}</td>
-      <td class="planned-date">${escHtml(entry.date || '—')}</td>
+      <td class="planned-date">${escHtml(isoDateToWwLabel(entry.date))}</td>
       <td>${escHtml(entry.notes || '')}</td>
       <td class="planned-created">${created}</td>
-      <td><button class="btn btn-sm btn-delete-planned" data-id="${escHtml(entry.id)}" title="Eliminar">&#10005;</button></td>
+      <td><button class="btn btn-sm btn-delete-planned" data-id="${escHtml(entry.id)}" title="Delete">&#10005;</button></td>
     </tr>`;
   }
   plannedTableBody.innerHTML = html;
@@ -2871,7 +3364,7 @@ function renderPlannedTable(list) {
   // Bind delete buttons
   plannedTableBody.querySelectorAll('.btn-delete-planned').forEach(btn => {
     btn.addEventListener('click', async () => {
-      if (!confirm('¿Eliminar esta conversión planeada?')) return;
+      if (!confirm('Delete this planned conversion?')) return;
       try {
         const res = await fetch(`/api/planned-conversions/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' });
         if (!res.ok) {
@@ -2891,41 +3384,71 @@ function escHtml(str) {
   return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Converts a stored ISO date (e.g. "2026-05-14") to Intel WW label (e.g. "WW20.5")
+// Uses forecastSlots (next WW) and todayPeriod (current WW) for the lookup.
+function isoDateToWwLabel(isoDate) {
+  if (!isoDate) return '—';
+  // Check next-WW slots
+  if (forecastSlots.length) {
+    const slot = forecastSlots.find(s => s.date === isoDate);
+    if (slot) {
+      const wwNum = Number(String(slot.ww).replace(/\D/g, '')) % 100;
+      return `WW${wwNum}.${slot.day}`;
+    }
+  }
+  // Check current WW by scanning Sun–Sat of the current week
+  if (todayPeriod) {
+    const todayWwNum = Number(String(todayPeriod.ww).replace(/\D/g, '')) % 100;
+    const cursor = new Date();
+    cursor.setDate(cursor.getDate() - cursor.getDay()); // rewind to Sunday
+    for (let d = 0; d < 7; d++) {
+      const iso = cursor.toISOString().slice(0, 10);
+      if (iso === isoDate) return `WW${todayWwNum}.${cursor.getDay()}`;
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+  return isoDate; // fallback: raw ISO date
+}
+
 plannedForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   showPlannedFormError('');
 
-  const cellEl = document.getElementById('pCell');
   const area       = pArea.value.trim();
   const tool       = pTool.value.trim();
-  const cell       = cellEl ? cellEl.value.trim() : '';
+  const cells      = getSelectedCells();
   const newProduct = pProduct.value.trim();
   const date       = pDate.value.trim();
   const notes      = pNotes.value.trim();
 
-  if (!area || !tool || !cell || !newProduct || !date) {
-    showPlannedFormError('Completa todos los campos obligatorios (*).');
+  if (!area || !tool || !cells.length || !newProduct || !date) {
+    showPlannedFormError('Please fill in all required fields (*) and select at least one cell.');
     return;
   }
 
   try {
-    const res = await fetch('/api/planned-conversions', {
-      method : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify({ area, tool, cell, newProduct, date, notes }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      showPlannedFormError(err.error || res.statusText);
-      return;
+    // POST one entry per selected cell
+    for (const cell of cells) {
+      const res = await fetch('/api/planned-conversions', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ area, tool, cell, newProduct, date, notes }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        showPlannedFormError(`Cell ${cell}: ${err.error || res.statusText}`);
+        return;
+      }
     }
-    // Reset form (keep area/sub selection for quick successive adds)
+    // Reset form (keep area/sub/tool selection for quick successive adds)
     pProduct.value = '';
     pDate.value    = '';
     pNotes.value   = '';
+    // Uncheck all cells
+    pCellList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; cb.indeterminate = false; });
     await loadPlannedConversions();
   } catch (err) {
-    showPlannedFormError(`Error de red: ${err.message}`);
+    showPlannedFormError(`Network error: ${err.message}`);
   }
 });
 
@@ -2933,11 +3456,11 @@ plannedForm.addEventListener('submit', async (e) => {
 plannedExportBtn.addEventListener('click', async () => {
   try {
     const list = await apiFetch('/api/planned-conversions');
-    if (!list.length) { alert('No hay conversiones planeadas para exportar.'); return; }
-    const headers = ['Área', 'Tool', 'Celda', 'Nuevo Producto', 'Fecha', 'Notas', 'Registrado'];
+    if (!list.length) { alert('No planned conversions to export.'); return; }
+    const headers = ['Area', 'Tool', 'Cell', 'New Product', 'Date', 'Notes', 'Registered'];
     const rows = list.map(e => [
       e.area, e.tool, e.cell, e.newProduct, e.date, e.notes || '',
-      e.createdAt ? new Date(e.createdAt).toLocaleString('es-MX') : '',
+      e.createdAt ? new Date(e.createdAt).toLocaleString('en-US') : '',
     ].map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(','));
     const csv  = [headers.map(h => `"${h}"`).join(','), ...rows].join('\r\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -2949,11 +3472,54 @@ plannedExportBtn.addEventListener('click', async () => {
   } catch (err) { alert(`Error: ${err.message}`); }
 });
 
+// Populate the Change Date dropdown with selectable Intel-calendar WW/day options:
+// - Remaining days of the current WW that haven't passed yet (today excluded if before end of WW)
+// - All 7 days of the next WW
+// Each option shows "WWxx.d — Day Name (yyyy-mm-dd)" and its value is the ISO date.
+function populatePlannedDates() {
+  if (!todayPeriod || !forecastSlots.length) {
+    pDate.innerHTML = '<option value="">Loading dates…</option>';
+    return;
+  }
+
+  const todayDate   = new Date().toISOString().slice(0, 10);
+  const todayWwFull = Number(String(todayPeriod.ww).replace(/\D/g, ''));  // e.g. 202619
+  const todayWwNum  = todayWwFull % 100;                                   // e.g. 19
+  const nextWwNum   = todayWwNum + 1;                                      // e.g. 20
+
+  pDate.innerHTML = '<option value="">Select date…</option>';
+
+  // ── Remaining days of the current WW (today included, past days excluded) ──
+  const calCursor = new Date();
+  calCursor.setDate(calCursor.getDate() - calCursor.getDay()); // rewind to Sunday
+  for (let d = 0; d < 7; d++) {
+    const iso = calCursor.toISOString().slice(0, 10);
+    const dow = calCursor.getDay();
+    if (iso >= todayDate) {
+      const opt = document.createElement('option');
+      opt.value = iso;
+      opt.textContent = `WW${todayWwNum}.${dow}`;
+      pDate.appendChild(opt);
+    }
+    calCursor.setDate(calCursor.getDate() + 1);
+  }
+
+  // ── All 7 days of the next WW (from forecastSlots) ──────────────────────────
+  const nextWwSlots = forecastSlots.filter(s =>
+    Number(String(s.ww).replace(/\D/g, '')) % 100 === nextWwNum
+  );
+  for (const slot of nextWwSlots) {
+    const opt = document.createElement('option');
+    opt.value = slot.date;
+    opt.textContent = `WW${nextWwNum}.${slot.day}`;
+    pDate.appendChild(opt);
+  }
+}
+
 // Open/close modal
 plannedBtn.addEventListener('click', () => {
   plannedModal.style.display = 'flex';
-  // Set today as default date
-  if (!pDate.value) pDate.value = new Date().toISOString().slice(0, 10);
+  populatePlannedDates();
   loadPlannedConversions();
 });
 closePlannedBtn.addEventListener('click', () => { plannedModal.style.display = 'none'; });

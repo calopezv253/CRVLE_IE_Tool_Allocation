@@ -1262,6 +1262,79 @@ h4 { font-size: 16px; }
   .planned-form-grid { grid-template-columns: 1fr; }
 }
 
+/* Cell checkbox list spans full width */
+.planned-field-cells {
+  grid-column: 1 / -1;
+}
+
+/* Scrollable checkbox grid */
+.pcell-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+.dark .pcell-list { background: var(--clr-surface); }
+.pcell-list:focus-within {
+  border-color: var(--clr-primary);
+  box-shadow: 0 0 0 3px rgba(0,113,197,.15);
+}
+.pcell-placeholder {
+  font-size: 13px;
+  color: var(--clr-text-muted);
+  padding: 2px 0;
+}
+.pcell-toggle-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--clr-border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--clr-text-muted);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  cursor: pointer;
+  user-select: none;
+}
+.pcell-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+}
+.pcell-item:hover { background: rgba(0,113,197,.08); }
+.pcell-item input[type="checkbox"] {
+  accent-color: var(--clr-primary);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+/* Free-text input when tool has no fixed layout */
+.pcell-free-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  font-family: inherit;
+  background: transparent;
+  color: var(--clr-text);
+}
+
 .planned-field {
   display: flex;
   flex-direction: column;
@@ -1618,6 +1691,107 @@ body.dark .modal {
   border: 1px solid var(--clr-border);
   color: var(--clr-text);
 }
+
+/* ═══════════════════════════════════════════════════
+   DISABLE / ENABLE TOOLS
+   ═══════════════════════════════════════════════════ */
+
+/* Topbar button */
+.btn-disable-tools { font-size: 18px; }
+
+/* Modal size */
+.modal-disable-tools {
+  max-width: 540px;
+  width: 100%;
+}
+
+/* Search row */
+.disable-tools-search-row {
+  margin-bottom: 10px;
+}
+.disable-tools-search-row .filter-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Scrollable list container */
+.disable-tools-list {
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 0;
+}
+
+/* Group (per area) */
+.dt-group { margin-bottom: 4px; }
+
+.dt-group-header {
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--clr-text-muted);
+  background: var(--clr-bg);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* Each tool row */
+.dt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background var(--transition);
+  font-size: 13px;
+  color: var(--clr-text);
+}
+.dt-row:hover { background: rgba(0,113,197,.08); }
+
+.dt-checkbox {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  accent-color: var(--clr-primary);
+  cursor: pointer;
+}
+
+/* "DISABLED" badge inside dt-row (only shows when checkbox is checked via CSS) */
+.dt-badge-disabled {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  color: #fff;
+  background: #c0392b;
+  border-radius: 3px;
+  padding: 1px 5px;
+  display: none;
+}
+.dt-row:has(.dt-checkbox:checked) .dt-badge-disabled { display: inline-block; }
+
+/* Disabled badge on machine card header */
+.tool-disabled-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  color: #fff;
+  background: #c0392b;
+  border-radius: 3px;
+  padding: 2px 5px;
+  margin-left: 6px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+/* Dark mode adjustments */
+body.dark .dt-group-header { background: var(--clr-surface); }
+body.dark .disable-tools-list { border-color: var(--clr-border); }
+body.dark .dt-row:hover { background: rgba(30,144,255,.12); }
 body.dark .modal-title { color: var(--clr-text); }
 body.dark .modal-subtitle { color: var(--clr-text-muted); }
 body.dark .discover-status { color: var(--clr-text-muted); }
