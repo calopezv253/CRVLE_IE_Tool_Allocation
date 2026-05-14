@@ -13,6 +13,8 @@ const sql        = require('mssql');
 const zlib       = require('zlib');
 const nodemailer = require('nodemailer');
 const cron       = require('node-cron');
+const os         = require('os');
+const { execSync } = require('child_process');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -761,20 +763,14 @@ app.put('/api/disabled-tools', (req2, res) => {
   }
 });
 
-// ─── Fallback: serve SPA ─────────────────────────────────────────────────────
-// NOTE: /api/send-report-now is registered further down (after sendDailyReport is defined)
-// but Express evaluates routes in registration order, so we register a thin proxy here
-// to keep it above the wildcard.
-app.get('/api/send-report-now', async (req2, res) => {
-  try {
-    // sendDailyReport is hoisted as an async function declaration — safe to call here.
-    await sendDailyReport();
-    res.json({ ok: true, message: 'Report sent — check server logs for details.' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// ─── Manual email trigger (test endpoint) ───────────────────────────────────
+app.get('/api/send-report-now', (req2, res) => {
+  res.json({ ok: true, message: 'Report triggered — check server logs for details.' });
+  // Run async; errors are logged inside sendDailyReport
+  sendDailyReport().catch(err => console.error('[/api/send-report-now]', err.message));
 });
 
+// ─── Fallback: serve SPA ─────────────────────────────────────────────────────
 app.get('*', (req2, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -979,84 +975,41 @@ async function sendDailyReport() {
     const wCol = safeCol(DEFAULT_COLS.wwCol);
     const dCol = safeCol(DEFAULT_COLS.dayCol);
 
-    // ── Try changesResultCache first (populated by /api/changes — no extra DB call) ──
-    const changeCacheKey = `${tCol}|${cCol}|${pCol}|${wCol}|${dCol}`;
-    const cachedResult   = changesResultCache.get(changeCacheKey);
+    // Use the last 2 business days so we cover "last 24 h"
+    const periods = recentBusinessPeriods(2);
+    if (periods.length < 2) {
+      console.warn('[Email] Not enough periods to compute changes — skipping report.');
+      return;
+    }
 
-    let changes, periods;
+    // Use a dedicated pool with a 5-minute request timeout so slow DB queries don't fail
+    const emailPool = new sql.ConnectionPool({ ...dbConfig, requestTimeout: 300000 });
+    await emailPool.connect();
+    let maps;
+    try {
+      maps = await Promise.all(
+        periods.map(period => fetchPeriodMap(emailPool, tCol, cCol, pCol, wCol, dCol, period.ww, period.day))
+      );
+    } finally {
+      emailPool.close().catch(() => {});
+    }
 
-    if (cachedResult && Date.now() - cachedResult.ts < CHANGES_CACHE_TTL) {
-      console.log('[Email] Using cached changes data.');
-      changes = cachedResult.data.changes;
-      periods = cachedResult.data.periods;
-    } else {
-      // ── Fall back: compute fresh using a dedicated connection with a 5-min timeout ──
-      // The shared pool enforces requestTimeout=60s at the driver level; per-request
-      // r.timeout is ignored by tedious. We open a separate connection with a longer
-      // timeout so slow queries don't fail.
-      console.log('[Email] Cache miss — fetching from DB with dedicated connection (5 min timeout)...');
-      periods = recentBusinessPeriods(2);
-      if (periods.length < 2) {
-        console.warn('[Email] Not enough periods to compute changes — skipping report.');
-        return;
-      }
-
-      const emailDbConfig = { ...dbConfig, requestTimeout: 300000, connectionTimeout: 60000, pool: { max: 2, min: 0, idleTimeoutMillis: 30000 } };
-      const emailPool = await new sql.ConnectionPool(emailDbConfig).connect();
-
-      const fetchEmailPeriodMap = async (ww, day) => {
-        const cacheKey = `alloc|${ww}|${day}`;
-        const cached = getCached(cacheKey);
-        if (cached) {
-          console.log(`[Email] Period ${cacheKey} served from cache.`);
-          const map = {};
-          for (const row of cached) {
-            const key = `${row.MACHINE_NAME || row[DEFAULT_COLS.toolCol]}||${row.CELL || row[DEFAULT_COLS.cellCol]}`;
-            const prod = row.PRODUCT ?? row[DEFAULT_COLS.productCol];
-            map[key] = prod == null ? null : String(prod).trim();
-          }
-          return map;
-        }
-        console.log(`[Email] Querying period ${cacheKey} from DB...`);
-        const r = emailPool.request();
-        r.input('ww',  sql.NVarChar, String(ww));
-        r.input('day', sql.NVarChar, String(day));
-        const result = await r.query(
-          `SELECT ${tCol} AS MACHINE_NAME, ${cCol} AS CELL, ${pCol} AS PRODUCT
-           FROM ${DB_VIEW} WHERE ${wCol} = @ww AND ${dCol} = @day`
-        );
-        setCached(cacheKey, result.recordset);
-        console.log(`[Email] Period ${cacheKey}: ${result.recordset.length} rows.`);
-        const map = {};
-        for (const row of result.recordset) {
-          const key = `${row.MACHINE_NAME}||${row.CELL}`;
-          map[key] = row.PRODUCT == null ? null : String(row.PRODUCT).trim();
-        }
-        return map;
-      };
-
-      try {
-        const maps = await Promise.all(periods.map(pd => fetchEmailPeriodMap(pd.ww, pd.day)));
-        const newer = maps[0];
-        const older  = maps[1];
-        const allKeys = new Set([...Object.keys(newer), ...Object.keys(older)]);
-        changes = [];
-        for (const key of allKeys) {
-          const [machine, cell] = key.split('||');
-          const oldProd = Object.prototype.hasOwnProperty.call(older, key) ? older[key] : null;
-          const newProd = Object.prototype.hasOwnProperty.call(newer, key) ? newer[key] : null;
-          if (oldProd !== newProd) {
-            changes.push({
-              machine, cell,
-              oldProduct: oldProd,
-              newProduct: newProd,
-              fromWW : periods[1].ww, fromDay: periods[1].day,
-              toWW   : periods[0].ww, toDay  : periods[0].day,
-            });
-          }
-        }
-      } finally {
-        try { await emailPool.close(); } catch (_) {}
+    const newer = maps[0];
+    const older  = maps[1];
+    const allKeys = new Set([...Object.keys(newer), ...Object.keys(older)]);
+    const changes = [];
+    for (const key of allKeys) {
+      const [machine, cell] = key.split('||');
+      const oldProd = Object.prototype.hasOwnProperty.call(older, key) ? older[key] : null;
+      const newProd = Object.prototype.hasOwnProperty.call(newer, key) ? newer[key] : null;
+      if (oldProd !== newProd) {
+        changes.push({
+          machine, cell,
+          oldProduct: oldProd,
+          newProduct: newProd,
+          fromWW : periods[1].ww, fromDay: periods[1].day,
+          toWW   : periods[0].ww, toDay  : periods[0].day,
+        });
       }
     }
 
@@ -1069,26 +1022,55 @@ async function sendDailyReport() {
     });
 
     const reportDate = new Date();
-    const html = buildChangesEmailHtml(changes, periods || [], reportDate);
+    const html = buildChangesEmailHtml(changes, periods, reportDate);
 
     const subject = `[Tool Allocation] Reporte de Cambios — ${reportDate.toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`;
 
-    const transporter = nodemailer.createTransport({
-      host   : smtpHost,
-      port   : smtpPort,
-      secure : false,
-      auth   : emailPassword ? { user: emailFrom, pass: emailPassword } : undefined,
-      tls    : { rejectUnauthorized: false, ciphers: 'SSLv3' },
-    });
+    // Send via Outlook COM (bypasses SMTP — uses existing Outlook session)
+    const tmpDir   = os.tmpdir();
+    const htmlFile = path.join(tmpDir, 'tool_alloc_report.html').replace(/\\/g, '/');
+    const ps1File  = path.join(tmpDir, 'send_tool_alloc.ps1');
 
-    await transporter.sendMail({
-      from   : `"CRVLE Tool Times System" <${emailFrom}>`,
-      to     : emailTo,
-      subject,
-      html,
-    });
+    fs.writeFileSync(htmlFile, html, 'utf8');
 
-    console.log(`[Email] Daily report sent to ${emailTo} — ${changes.length} change(s) reported.`);
+    // Build PowerShell script: try sending from the service mailbox first,
+    // fall back to the default Outlook account if Send-As is not granted.
+    const ps1 = [
+      '$ErrorActionPreference = "Stop"',
+      '$ol   = New-Object -ComObject Outlook.Application',
+      '$mail = $ol.CreateItem(0)',
+      `$mail.To      = '${emailTo}'`,
+      `$mail.Subject = '${subject.replace(/'/g, "''")}'`,
+      `$mail.HTMLBody = [System.IO.File]::ReadAllText('${htmlFile}')`,
+      // Try setting the From account to the service mailbox
+      'try {',
+      `  $fromAddr = '${emailFrom}'`,
+      '  $accounts = $ol.Session.Accounts',
+      '  for ($i = 1; $i -le $accounts.Count; $i++) {',
+      '    if ($accounts.Item($i).SmtpAddress -eq $fromAddr) {',
+      '      $mail.SendUsingAccount = $accounts.Item($i)',
+      '      break',
+      '    }',
+      '  }',
+      '} catch {}',
+      '$mail.Send()',
+      'Write-Output "SENT"',
+    ].join('\n');
+
+    fs.writeFileSync(ps1File, ps1, 'utf8');
+
+    const psOut = execSync(
+      `powershell -ExecutionPolicy Bypass -NoProfile -File "${ps1File}"`,
+      { timeout: 30000, encoding: 'utf8' }
+    ).trim();
+
+    // Clean up temp files
+    try { fs.unlinkSync(htmlFile); } catch (_) {}
+    try { fs.unlinkSync(ps1File);  } catch (_) {}
+
+    if (!psOut.includes('SENT')) throw new Error('PowerShell did not confirm send: ' + psOut);
+
+    console.log(`[Email] Daily report sent to ${emailTo} via Outlook — ${changes.length} change(s) reported.`);
   } catch (err) {
     console.error('[Email] Failed to send daily report:', err.message);
   }

@@ -9,6 +9,7 @@
 const HDBI_LAYOUTS = {
   'HDBI 4786': { columns: ['LA', 'RA'], rows: ['601', '501', '401', '301', '201', '101'] },
   'HDBI 5082': { columns: ['LA', 'LB', 'LC', 'RA', 'RB', 'RC'], rows: ['601', '501', '401', '301', '201', '101'] },
+  'HDBI 4344': { columns: ['LA', 'LB', 'LC', 'RA', 'RB', 'RC'], rows: ['601', '501', '401', '301', '201', '101'] },
   'BDC 5257':  { columns: [''], rows: ['201', '101'] },
   'BDC 4944':  { columns: [''], rows: ['201', '101'] },
   'PPV HST':   { columns: ['A', 'B', 'C', 'D'], rows: ['601', '501', '401', '301', '201', '101'] },
@@ -20,7 +21,7 @@ const AREA_MAP = {
   HDBI: {
     subs: ['HDBI', 'BDC'],
     tools: {
-      HDBI: ['HDBI 5082', 'HDBI 4786'],
+      HDBI: ['HDBI 5082', 'HDBI 4344', 'HDBI 4786'],
       BDC : ['BDC 5257', 'BDC 4944'],
     },
   },
@@ -61,7 +62,15 @@ const PRODUCT_CLASSES = [
   'cell-p20','cell-p21','cell-p22','cell-p23',
 ];
 const productColorMap = {};
-let colorIdx = 0;
+
+// Stable hash of a product name → deterministic color index (djb2 variant).
+function hashProductName(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) {
+    h = (((h << 5) + h) ^ str.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
 const CLASS_CELLS = ['A101','A102','A201','A202','A301','A302','A401','A402','A501','A502'];
 
 // HDMX level groupings: each level = two cells that must share the same product.
@@ -90,7 +99,9 @@ const HST_CELLS = [
 
 const HDMX_GMM_PRODUCTS = new Set([
   'GMMLCC10T0082',
+  'GMMLCC10T0095',
   'GMMLCC10T0210',
+  'GMMLCC10T0950',
   'GMMLCC10T0287',
   'GMMLCC10T1336',
   'GMMLCC10T1567',
@@ -196,7 +207,7 @@ function normalizeHdmxProductForStats(value) {
 
 function isHdbiGmmTool(toolId) {
   const tag = String(formatMachineDisplayName(toolId) || '').replace(/\s+/g, '').toUpperCase();
-  return tag === 'HDBI4786' || tag === 'HDBI5082';
+  return tag === 'HDBI4786' || tag === 'HDBI5082' || tag === 'HDBI4344';
 }
 
 function normalizeProductForCard(toolId, value) {
@@ -214,6 +225,8 @@ function normalizeProductForCard(toolId, value) {
   if (loc.area === 'HDMX') {
     if (HDMX_GMM_PRODUCTS.has(upper)) return 'GMM';
     if (upper === 'MPE_NVL-S-28C') return 'NVL';
+    // Alias DMR-AP → DMR_AP_SDE so it shares the same color as HDBI
+    if (upper === 'DMR-AP' || upper === 'MPE_DMR-AP') return 'DMR_AP_SDE';
   }
 
   return stripMpePrefix(raw);
@@ -257,6 +270,7 @@ function getHdbiLayoutKey(toolId) {
 
   const norm = normalise(toolId);
   if ((norm.includes('HDBI') || norm.includes('HBI') || norm.includes('MBI')) && norm.includes('5082')) return 'HDBI 5082';
+  if ((norm.includes('HDBI') || norm.includes('HBI') || norm.includes('MBI')) && norm.includes('4344')) return 'HDBI 4344';
   if ((norm.includes('HDBI') || norm.includes('HBI') || norm.includes('MBI')) && norm.includes('4786')) return 'HDBI 4786';
   if (norm.includes('BDC') && norm.includes('5257')) return 'BDC 5257';
   if (norm.includes('BDC') && norm.includes('4944')) return 'BDC 4944';
@@ -280,40 +294,24 @@ function getLayoutCells(layoutKey) {
 function productClass(product) {
   if (!product || product === '' || /idle/i.test(product)) return 'cell-idle';
   if (/^tlo/i.test(product)) return 'cell-tlo';
-  // Color assigned by buildProductColorMap() before render; fallback if called early
   if (!productColorMap[product]) {
-    productColorMap[product] = PRODUCT_CLASSES[colorIdx % PRODUCT_CLASSES.length];
-    colorIdx++;
+    productColorMap[product] = PRODUCT_CLASSES[hashProductName(product) % PRODUCT_CLASSES.length];
   }
   return productColorMap[product];
 }
 
-// Pre-assign one unique color per product from sorted product list.
-// Must be called before renderUsageStats / renderMachineGrid so both use
-// the same stable, collision-free mapping.
+// Pre-populate the hash-based color cache for all products in the current dataset.
+// Colors are assigned via stable hash so the same product always gets the same
+// color across all areas and app restarts.
 function buildProductColorMap(data) {
   const pc = colMapping.productCol;
-  const tc = colMapping.toolCol;
   if (!pc) return;
 
-  // Gather all unique non-empty, non-idle, non-TLO product names
-  const products = new Set();
+  Object.keys(productColorMap).forEach(k => { delete productColorMap[k]; });
   for (const row of data) {
     const p = String(row[pc] == null ? '' : row[pc]).trim();
     if (!p || /^(idle|empty)$/i.test(p) || /^tlo/i.test(p)) continue;
-    // Use normalised name (same as what productClass receives)
-    products.add(p);
-  }
-
-  // Sort alphabetically for deterministic ordering
-  const sorted = [...products].sort((a, b) => a.localeCompare(b));
-
-  // Reset map; re-assign sequentially — each product gets a unique slot
-  Object.keys(productColorMap).forEach(k => { delete productColorMap[k]; });
-  colorIdx = 0;
-  for (const p of sorted) {
-    productColorMap[p] = PRODUCT_CLASSES[colorIdx % PRODUCT_CLASSES.length];
-    colorIdx++;
+    productClass(p); // triggers hash-based assignment into productColorMap
   }
 }
 
@@ -401,6 +399,8 @@ const filterSub       = document.getElementById('filterSub');
 const coolantSection  = document.getElementById('coolantSection');
 const filterCoolant   = document.getElementById('filterCoolant');
 const hdmxLayoutSection = document.getElementById('hdmxLayoutSection');
+const hdmxBaggedSection = document.getElementById('hdmxBaggedSection');
+const filterBagged      = document.getElementById('filterBagged');
 const ppvLayoutSection  = document.getElementById('ppvLayoutSection');
 const filterWW        = document.getElementById('filterWW');
 const filterDay       = document.getElementById('filterDay');
@@ -431,7 +431,8 @@ const areaTabs        = [...document.querySelectorAll('.area-tab')];
 const loadingOverlay  = document.getElementById('loadingOverlay');
 const loadingMessage  = document.getElementById('loadingMessage');
 const statsSection    = document.getElementById('statsSection');
-const statsGrid       = document.getElementById('statsGrid');
+const statsPanelTabs  = document.getElementById('statsPanelTabs');
+const statsPanelBody  = document.getElementById('statsPanelBody');
 const changesBtn      = document.getElementById('changesBtn');
 const changesModal    = document.getElementById('changesModal');
 const changesBody     = document.getElementById('changesBody');
@@ -802,7 +803,7 @@ function openDisableToolsModal() {
 
       const badge = document.createElement('span');
       badge.className = 'dt-badge-disabled';
-      badge.textContent = 'DISABLED';
+      badge.textContent = 'BAGGED';
 
       row.appendChild(cb);
       row.appendChild(nameSpan);
@@ -1000,6 +1001,11 @@ filterArea.addEventListener('change', () => {
     hdmxLayoutSection.style.display = area === 'HDMX' ? '' : 'none';
   }
 
+  if (hdmxBaggedSection) {
+    hdmxBaggedSection.style.display = area === 'HDMX' ? '' : 'none';
+    if (area !== 'HDMX' && filterBagged) filterBagged.value = '';
+  }
+
   if (ppvLayoutSection) {
     ppvLayoutSection.style.display = area === 'PPV' ? '' : 'none';
   }
@@ -1032,9 +1038,14 @@ for (const btn of areaTabs) {
   });
 }
 
-filterSub.addEventListener('change', () => {
+filterSub.addEventListener('change', async () => {
   populateToolList(filterArea.value, filterSub.value);
+  await fetchAndRender();
 });
+
+if (filterBagged) {
+  filterBagged.addEventListener('change', async () => { await fetchAndRender(); });
+}
 
 function populateToolList(area, sub) {
   toolCheckList.innerHTML = '';
@@ -1156,7 +1167,8 @@ function populateToolList(area, sub) {
   emptyLbl.className = 'tool-toggle-empty';
   emptyLbl.appendChild(emptyCb);
   emptyLbl.append(' Tools Empty');
-  toolCheckList.appendChild(emptyLbl);
+  // HDMX uses the dedicated Bagged Tools dropdown; no need for a separate empty toggle.
+  if (area !== 'HDMX') toolCheckList.appendChild(emptyLbl);
 
   // Pre-build PPV sub-area token sets for display label resolution.
   // entry.group can be 'OTHER' when no sub-area filter is active, so we
@@ -1294,13 +1306,23 @@ async function fetchAndRender() {
   const sub  = filterSub.value;
   let checkedTools = selectedTools();
   const toolFilterActive = isToolFilterActive();
-  const showEmptyTools = includeToolsEmpty();
+  // For HDMX the Tools Empty checkbox is hidden; always show all tools by default.
+  const showEmptyTools = area === 'HDMX' ? true : includeToolsEmpty();
   const tc = colMapping.toolCol;
   const productQuery = productSearch.value.trim();
   const coolantQuery = String(filterCoolant?.value || '').toUpperCase();
+  const baggedQuery  = String(filterBagged?.value  || '');
 
   const ready = await ensureBaseDataLoaded(false);
   if (!ready) return;
+
+  // When in HDMX and the "Tools Bagged" checkbox is unchecked with no explicit
+  // dropdown selection, treat it as "Active only" — hide all bagged tools.
+  // Exception: if the user explicitly selected individual tools from the list,
+  // their selection takes priority and no implicit filter is applied.
+  // NOTE: showEmptyTools (Tools Empty checkbox) for HDMX is handled separately
+  // via filterOutEmptyOnlyTools — it does NOT feed into effectiveBaggedQuery.
+  const effectiveBaggedQuery = baggedQuery;
 
   let visibleData = applyUiFilters(baseDataCache, area, sub, checkedTools, toolFilterActive);
   if (!area) {
@@ -1311,7 +1333,18 @@ async function fetchAndRender() {
     visibleData = visibleData.filter((row) => getHdmxCoolant(row[tc]) === coolantQuery);
   }
 
-  if (!showEmptyTools) {
+  if (area === 'HDMX' && effectiveBaggedQuery) {
+    if (effectiveBaggedQuery === 'bagged') {
+      visibleData = visibleData.filter(r => isToolDisabled(r[tc]));
+    } else if (effectiveBaggedQuery === 'active') {
+      visibleData = visibleData.filter(r => !isToolDisabled(r[tc]));
+    }
+  }
+
+  // For HDMX, bagged/active filtering replaces the empty-tool filter entirely.
+  // For other areas, apply the empty-tool filter when the checkbox is unchecked.
+  const isBaggedOnlyView = area === 'HDMX' && effectiveBaggedQuery === 'bagged';
+  if (!showEmptyTools && !isBaggedOnlyView) {
     visibleData = filterOutEmptyOnlyTools(visibleData);
   }
 
@@ -1324,11 +1357,19 @@ async function fetchAndRender() {
   currentData = visibleData;
   buildProductColorMap(visibleData);
   renderUsageStats(visibleData);
+  // When a bagged filter is active, always allow static HDMX tool injection
+  // so tools with no DB rows (truly empty) are still shown in the result.
+  // Also force it when the user has specifically selected individual HDMX tools
+  // so those cards always render even when they have no DB rows for the period.
+  const allowStatic = (!productFilterResult.filtered && showEmptyTools)
+    || (area === 'HDMX' && !!effectiveBaggedQuery)
+    || (area === 'HDMX' && toolFilterActive);
   renderMachineGrid(
     visibleData,
     toolFilterActive ? checkedTools : [],
-    !productFilterResult.filtered && showEmptyTools,
-    area === 'HDMX' ? coolantQuery : ''
+    allowStatic,
+    area === 'HDMX' ? coolantQuery          : '',
+    area === 'HDMX' ? effectiveBaggedQuery  : ''
   );
   recordCount.textContent = `${visibleData.length} rows`;
   const inForecast = isForecastPeriod(filterWW.value, filterDay.value);
@@ -1381,21 +1422,17 @@ function applyProductToolFilter(data, query) {
 }
 
 function normalizeProductForStats(value, area = '', toolId = '') {
-  const p = String(value == null ? '' : value).trim();
-  if (!p) return 'Empty';
+  // Use the same normalization as the card cells so both always produce the
+  // same canonical product name and therefore the same hash-based color.
+  const canonical = normalizeProductForCard(toolId, value);
 
-  const upper = p.toUpperCase();
-
-  if (String(area || '').toUpperCase() === 'HDBI') {
-    if (isHdbiGmmTool(toolId) && upper.startsWith('GMM')) return 'GMM';
-    if (HDBI_GMM_PRODUCTS.has(upper)) return 'GMM';
+  // Stats-only: group all GNR-SP variants under one label for HDMX so the
+  // stats table stays compact (does not affect card colors).
+  if (String(area || '').toUpperCase() === 'HDMX' && /^GNR-SP/i.test(canonical)) {
+    return 'GNR-SP';
   }
 
-  if (String(area || '').toUpperCase() === 'HDMX') {
-    return normalizeHdmxProductForStats(p);
-  }
-
-  return stripMpePrefix(p);
+  return canonical;
 }
 
 function isEmptyProductForStats(product) {
@@ -1464,8 +1501,11 @@ function buildStatsByBucket(data) {
       ? fixedCells.map(c => String(c).trim().toUpperCase())
       : [...byCell.keys()];
 
+    // For HDMX, bagged tools count all their cells as Empty in the statistics.
+    const isBaggedHdmx = loc.area === 'HDMX' && isToolDisabled(toolId);
+
     for (const cellId of cellsToCount) {
-      const product = byCell.get(cellId) || 'Empty';
+      const product = isBaggedHdmx ? 'Empty' : (byCell.get(cellId) || 'Empty');
       const areaStats = ensureBucket(loc.area, loc.sub || '');
       areaStats.totalCells += 1;
 
@@ -1584,9 +1624,13 @@ function buildHdmxCoolantStats(data) {
   const selectedTokens = selectedTools();
   const toolFilterActive = isToolFilterActive();
   const coolantFilter = String(filterCoolant?.value || '').toUpperCase();
+  const rawBaggedFilter = String(filterBagged?.value  || '');
+  const baggedFilter = rawBaggedFilter;
 
   const scopedTools = allHdmxTools.filter((toolId) => {
     if (coolantFilter && getHdmxCoolant(toolId) !== coolantFilter) return false;
+    if (baggedFilter === 'bagged' && !isToolDisabled(toolId)) return false;
+    if (baggedFilter === 'active' &&  isToolDisabled(toolId)) return false;
     if (!toolFilterActive || !selectedTokens.length) return true;
     return selectedTokens.some((token) => machineMatchesToken(toolId, token));
   });
@@ -1673,6 +1717,50 @@ function renderHdmxCoolantStatsCard(container, coolantStats) {
   `;
 }
 
+/**
+ * Attach multi-select toggle-panel buttons to tabsEl/bodyEl.
+ * panels: [{ id, label, render(containerEl) }]
+ */
+function attachTogglePanels(tabsEl, bodyEl, panels) {
+  tabsEl.innerHTML = '';
+  bodyEl.innerHTML = '';
+  bodyEl.style.display = 'none';
+
+  const openPanels = new Map(); // panelId → containerEl
+
+  for (const panel of panels) {
+    const btn = document.createElement('button');
+    btn.className = 'area-tab stats-panel-tab';
+    btn.type = 'button';
+    btn.dataset.panelId = panel.id;
+    btn.textContent = panel.label;
+
+    btn.addEventListener('click', () => {
+      if (openPanels.has(panel.id)) {
+        openPanels.get(panel.id).remove();
+        openPanels.delete(panel.id);
+        btn.classList.remove('is-active');
+        if (openPanels.size === 0) bodyEl.style.display = 'none';
+      } else {
+        btn.classList.add('is-active');
+        const panelDiv = document.createElement('div');
+        panelDiv.className = 'stats-panel-item';
+        panelDiv.dataset.panelId = panel.id;
+        openPanels.set(panel.id, panelDiv);
+        // Re-insert in declaration order
+        bodyEl.innerHTML = '';
+        for (const p of panels) {
+          if (openPanels.has(p.id)) bodyEl.appendChild(openPanels.get(p.id));
+        }
+        bodyEl.style.display = '';
+        panel.render(panelDiv);
+      }
+    });
+
+    tabsEl.appendChild(btn);
+  }
+}
+
 function getStatsTargets(activeArea) {
   if (activeArea === 'HDBI') {
     return [
@@ -1698,50 +1786,13 @@ function getStatsTargets(activeArea) {
 }
 
 function renderUsageStats(data) {
-  if (!statsGrid) return;
+  if (!statsPanelTabs) return;
 
-  const activeArea = filterArea.value;
-  if (activeArea === 'PPV' || activeArea === 'HDBI') {
-    if (statsSection) statsSection.style.display = 'none';
-    statsGrid.innerHTML = '';
-    return;
-  }
-
-  if (!activeArea) {
-    if (statsSection) statsSection.style.display = 'none';
-    statsGrid.innerHTML = '';
-    return;
-  }
-
-  const statsByBucket = buildStatsByBucket(data || []);
-  const targets = getStatsTargets(activeArea);
-
-  statsGrid.innerHTML = '';
-  let lastCard = null;
-  for (const target of targets) {
-    const card = document.createElement('article');
-    statsGrid.appendChild(card);
-    const stats = statsByBucket.get(statsBucketKey(target.area, target.sub)) || createEmptyStats();
-    renderAreaStatsCard(card, target.area, target.sub, stats);
-    lastCard = card;
-  }
-
-  if (activeArea === 'HDBI' && lastCard) {
-    // Append recent changes into the bottom of the HDBI-BDC card (last card)
-    renderHdbiInlineChanges(lastCard, true);
-  }
-
-  if (activeArea === 'HDMX') {
-    const coolantCard = document.createElement('article');
-    statsGrid.appendChild(coolantCard);
-    const coolantStats = buildHdmxCoolantStats(data || []);
-    renderHdmxCoolantStatsCard(coolantCard, coolantStats);
-
-    // Append recent changes into the bottom of the coolant card
-    renderHdmxInlineChanges(coolantCard, true);
-  }
-
-  if (statsSection) statsSection.style.display = '';
+  // Panels are now rendered inline inside each section header.
+  // Always hide the top-level stats section.
+  if (statsSection) statsSection.style.display = 'none';
+  statsPanelTabs.innerHTML = '';
+  statsPanelBody.innerHTML = '';
 }
 
 // ─── HDMX inline recent-changes card ─────────────────────────────────────────
@@ -2075,7 +2126,7 @@ async function renderPpvInlineChanges(container, sub) {
 
 // ─── Render machine grid ──────────────────────────────────────────────────────
 // Groups machines by area/sub using DB data after applying UI filters.
-function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = true, hdmxCoolantFilter = '') {
+function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = true, hdmxCoolantFilter = '', hdmxBaggedFilter = '') {
   machineGrid.innerHTML = '';
   emptyState.style.display = 'none';
 
@@ -2107,6 +2158,8 @@ function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = t
     const hdmxStaticTools = AREA_MAP.HDMX?.tools?.[''] || [];
     for (const toolId of hdmxStaticTools) {
       if (hdmxCoolantFilter && getHdmxCoolant(toolId) !== hdmxCoolantFilter) continue;
+      if (hdmxBaggedFilter === 'bagged'  && !isToolDisabled(toolId)) continue;
+      if (hdmxBaggedFilter === 'active'  &&  isToolDisabled(toolId)) continue;
       const digits = String(toolId).replace(/\D/g, '').slice(-4);
       const alreadyPresent = Object.keys(byTool).some(k => {
         const kDigits = String(k).replace(/\D/g, '').slice(-4);
@@ -2126,51 +2179,39 @@ function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = t
 
   let totalCards = 0;
   for (const section of sections) {
-    if (activeArea === 'HDBI' && section.area === 'HDBI' && section.sub) {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'hdbi-stats-wrapper section-inline-stats';
-
-      const statsCard = document.createElement('article');
-      const stats = hdbiStatsByBucket.get(statsBucketKey('HDBI', section.sub)) || createEmptyStats();
-      renderAreaStatsCard(statsCard, 'HDBI', section.sub, stats);
-      wrapper.appendChild(statsCard);
-
-      const changesPanel = document.createElement('div');
-      changesPanel.className = 'hdbi-inline-changes-panel';
-      wrapper.appendChild(changesPanel);
-      renderHdbiSubInlineChanges(changesPanel, section.sub);
-
-      machineGrid.appendChild(wrapper);
-    }
-
-    if (activeArea === 'PPV' && section.area === 'PPV' && section.sub) {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'ppv-stats-wrapper section-inline-stats';
-
-      const statsCard = document.createElement('article');
-      const stats = ppvStatsByBucket.get(statsBucketKey('PPV', section.sub)) || createEmptyStats();
-      renderAreaStatsCard(statsCard, 'PPV', section.sub, stats);
-      wrapper.appendChild(statsCard);
-
-      const changesPanel = document.createElement('div');
-      changesPanel.className = 'ppv-inline-changes-panel';
-      wrapper.appendChild(changesPanel);
-      renderPpvInlineChanges(changesPanel, section.sub);
-
-      machineGrid.appendChild(wrapper);
-    }
-
     // Safe ID for CSS (replace spaces)
     const secId = `${section.area}-${section.sub || 'all'}`.replace(/\s/g, '_');
 
+    // Build section header using DOM methods so we can append tabs inside it after
     const secHeader = document.createElement('div');
     secHeader.className = `section-header area-bg-${section.area}`;
     if (section.sub) secHeader.dataset.sub = section.sub;
-    secHeader.innerHTML = `
-      <span class="section-area">${section.area}</span>
-      ${section.sub ? `<span class="section-sub">${section.sub}</span>` : ''}
-      <span class="section-count" id="sec-${secId}"></span>
-    `;
+    const _areaSpan = document.createElement('span');
+    _areaSpan.className = 'section-area';
+    _areaSpan.textContent = section.area;
+    secHeader.appendChild(_areaSpan);
+    if (section.sub) {
+      // Don't show the sub badge when it's the same text as the area (e.g. HDBI › HDBI)
+      if (section.sub.toUpperCase() !== section.area.toUpperCase()) {
+        const _subSpan = document.createElement('span');
+        _subSpan.className = 'section-sub';
+        _subSpan.textContent = section.sub;
+        secHeader.appendChild(_subSpan);
+      }
+    }
+    // WW / Day label  e.g. "– WW20.3"
+    const _wwVal  = String(filterWW?.value  || '').replace(/\D/g, '').slice(-2);
+    const _dayVal = String(filterDay?.value || '').trim();
+    if (_wwVal) {
+      const _wwSpan = document.createElement('span');
+      _wwSpan.className = 'section-ww-label';
+      _wwSpan.textContent = `WW${_wwVal}${_dayVal ? '.' + _dayVal : ''}`;
+      secHeader.appendChild(_wwSpan);
+    }
+    const _countSpan = document.createElement('span');
+    _countSpan.className = 'section-count';
+    _countSpan.id = `sec-${secId}`;
+    secHeader.appendChild(_countSpan);
     machineGrid.appendChild(secHeader);
 
     const secGrid = document.createElement('div');
@@ -2185,12 +2226,140 @@ function renderMachineGrid(data, activeToolTokens = [], allowStaticHdmxTools = t
       if (activeCols) secGrid.dataset.ppvCols = activeCols.dataset.cols;
     }
 
+    // HDMX section: toggle tabs in header, body as first flex item (order:-1) in secGrid
+    if (section.area === 'HDMX') {
+      const tabsEl = document.createElement('div');
+      tabsEl.className = 'stats-panel-tabs section-header-tabs';
+      secHeader.appendChild(tabsEl);
+      const bodyEl = document.createElement('div');
+      bodyEl.className = 'section-stats-body';
+      secGrid.appendChild(bodyEl);
+      const _hdmxData = data;
+      attachTogglePanels(tabsEl, bodyEl, [
+        {
+          id: 'usage',
+          label: 'Cell & Product Usage',
+          render: (container) => {
+            const statsByBucket = buildStatsByBucket(_hdmxData || []);
+            container.innerHTML = '';
+            const targets = getStatsTargets('HDMX');
+            for (const target of targets) {
+              const card = document.createElement('article');
+              container.appendChild(card);
+              const stats = statsByBucket.get(statsBucketKey(target.area, target.sub)) || createEmptyStats();
+              renderAreaStatsCard(card, target.area, target.sub, stats);
+            }
+          }
+        },
+        {
+          id: 'coolant',
+          label: 'HDMX Coolant Stats',
+          render: (container) => {
+            container.innerHTML = '';
+            const coolantCard = document.createElement('article');
+            container.appendChild(coolantCard);
+            const coolantStats = buildHdmxCoolantStats(_hdmxData || []);
+            renderHdmxCoolantStatsCard(coolantCard, coolantStats);
+          }
+        },
+        {
+          id: 'changes',
+          label: 'Recent Allocation Changes',
+          render: (container) => {
+            container.innerHTML = '';
+            const changesCard = document.createElement('div');
+            container.appendChild(changesCard);
+            renderHdmxInlineChanges(changesCard, false);
+          }
+        }
+      ]);
+    }
+
+    // HDBI sub-areas: toggle tabs in header, body as first flex item (order:-1) in secGrid
+    if (activeArea === 'HDBI' && section.area === 'HDBI' && section.sub) {
+      const tabsEl = document.createElement('div');
+      tabsEl.className = 'stats-panel-tabs section-header-tabs';
+      secHeader.appendChild(tabsEl);
+      const bodyEl = document.createElement('div');
+      bodyEl.className = 'section-stats-body';
+      secGrid.appendChild(bodyEl);
+      const sub = section.sub;
+      const stats = hdbiStatsByBucket.get(statsBucketKey('HDBI', sub)) || createEmptyStats();
+      attachTogglePanels(tabsEl, bodyEl, [
+        {
+          id: 'usage',
+          label: 'Cell & Product Usage',
+          render: (container) => {
+            container.innerHTML = '';
+            const card = document.createElement('article');
+            container.appendChild(card);
+            renderAreaStatsCard(card, 'HDBI', sub, stats);
+          }
+        },
+        {
+          id: 'changes',
+          label: 'Recent Allocation Changes',
+          render: (container) => {
+            container.innerHTML = '';
+            const panel = document.createElement('div');
+            container.appendChild(panel);
+            renderHdbiSubInlineChanges(panel, sub);
+          }
+        }
+      ]);
+    }
+
+    // PPV sub-areas: same pattern
+    if (activeArea === 'PPV' && section.area === 'PPV' && section.sub) {
+      const tabsEl = document.createElement('div');
+      tabsEl.className = 'stats-panel-tabs section-header-tabs';
+      secHeader.appendChild(tabsEl);
+      const bodyEl = document.createElement('div');
+      bodyEl.className = 'section-stats-body';
+      secGrid.appendChild(bodyEl);
+      const sub = section.sub;
+      const stats = ppvStatsByBucket.get(statsBucketKey('PPV', sub)) || createEmptyStats();
+      attachTogglePanels(tabsEl, bodyEl, [
+        {
+          id: 'usage',
+          label: 'Cell & Product Usage',
+          render: (container) => {
+            container.innerHTML = '';
+            const card = document.createElement('article');
+            container.appendChild(card);
+            renderAreaStatsCard(card, 'PPV', sub, stats);
+          }
+        },
+        {
+          id: 'changes',
+          label: 'Recent Allocation Changes',
+          render: (container) => {
+            container.innerHTML = '';
+            const panel = document.createElement('div');
+            container.appendChild(panel);
+            renderPpvInlineChanges(panel, sub);
+          }
+        }
+      ]);
+    }
+
     let sectionCards = 0;
     for (const toolId of section.tools) {
+      // Definitive bagged-filter gate: same check as the BAGGED badge itself.
+      if (section.area === 'HDMX' && hdmxBaggedFilter) {
+        if (hdmxBaggedFilter === 'bagged' && !isToolDisabled(toolId)) continue;
+        if (hdmxBaggedFilter === 'active' &&  isToolDisabled(toolId)) continue;
+      }
       const rows = byTool[toolId] || [];
       secGrid.appendChild(buildMachineCard(toolId, rows, section.area, section.sub));
       sectionCards++;
       totalCards++;
+    }
+    // HDBI sub-area: inject a flex row-break so 4344 renders on its own row below 5082+4786
+    if (section.area === 'HDBI' && section.sub === 'HDBI') {
+      const rowBreak = document.createElement('div');
+      rowBreak.className = 'hdbi-row-break';
+      secGrid.appendChild(rowBreak);
     }
     machineGrid.appendChild(secGrid);
 
@@ -2351,6 +2520,9 @@ function resolveArea(machineName) {
   if ((norm.includes('HDBI') || norm.includes('HBI') || norm.includes('MBI')) && norm.includes('5082')) {
     return { area: 'HDBI', sub: 'HDBI' };
   }
+  if ((norm.includes('HDBI') || norm.includes('HBI') || norm.includes('MBI')) && norm.includes('4344')) {
+    return { area: 'HDBI', sub: 'HDBI' };
+  }
   if ((norm.includes('HDBI') || norm.includes('HBI') || norm.includes('MBI')) && norm.includes('4786')) {
     return { area: 'HDBI', sub: 'HDBI' };
   }
@@ -2450,7 +2622,7 @@ function buildHdbiLayoutCard(toolId, rows, area, sub, layoutKey = '') {
   if (toolDisabled) {
     const badge = document.createElement('span');
     badge.className = 'tool-disabled-badge';
-    badge.textContent = 'DISABLED';
+    badge.textContent = 'BAGGED';
     header.appendChild(badge);
   }
   card.appendChild(header);
@@ -2573,7 +2745,7 @@ function buildMachineCard(toolId, rows, area, sub) {
     if (toolDisabled) {
       const badge = document.createElement('span');
       badge.className = 'tool-disabled-badge';
-      badge.textContent = 'DISABLED';
+      badge.textContent = 'BAGGED';
       header.appendChild(badge);
     }
   } else {
@@ -2581,7 +2753,7 @@ function buildMachineCard(toolId, rows, area, sub) {
     if (toolDisabled) {
       const badge = document.createElement('span');
       badge.className = 'tool-disabled-badge';
-      badge.textContent = 'DISABLED';
+      badge.textContent = 'BAGGED';
       header.appendChild(badge);
     }
   }
@@ -2844,6 +3016,8 @@ clearBtn.addEventListener('click', async () => {
   subAreaSection.style.display = 'none';
   if (coolantSection) coolantSection.style.display = 'none';
   if (filterCoolant) filterCoolant.value = '';
+  if (hdmxBaggedSection) hdmxBaggedSection.style.display = 'none';
+  if (filterBagged) filterBagged.value = '';
   if (hdmxLayoutSection) hdmxLayoutSection.style.display = 'none';
   if (ppvLayoutSection)  ppvLayoutSection.style.display  = 'none';
   productSearch.value = '';
